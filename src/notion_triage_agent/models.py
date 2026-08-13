@@ -1,6 +1,8 @@
+import operator
 from pydantic import BaseModel, Field
-from enum import Enum 
+from enum import Enum
 from datetime import datetime
+from typing import Annotated
 
 class TaskCategory(str, Enum):
     TASK = "task"
@@ -83,4 +85,6 @@ class AgentState(BaseModel):
     raw_tasks: list[NotionTask] = Field(default_factory=list)
     analyses: list[TaskAnalysis] = Field(default_factory=list)
     recommendation: Recommendation | None = None
-    errors: list[str] = Field(default_factory=list)
+    # operator.add is a LangGraph reducer: node updates are appended to this
+    # list instead of replacing it, so errors from every node survive the run.
+    errors: Annotated[list[str], operator.add] = Field(default_factory=list)

@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-notion-triage-agent = "notion_triage_agent:main"
+notion-triage-agent = "notion_triage_agent.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
