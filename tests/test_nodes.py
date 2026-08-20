@@ -29,9 +29,7 @@ def make_task(task_id: str = "t1", title: str = "Fix auth") -> NotionTask:
 def make_analysis(task_id: str = "t1") -> TaskAnalysis:
     return TaskAnalysis(
         task_id=task_id,
-        classification=Classification(
-            category=TaskCategory.TASK, confidence=0.9, reasoning="r"
-        ),
+        classification=Classification(category=TaskCategory.TASK, confidence=0.9, reasoning="r"),
         action_items=[ActionItem(description="do it", estimated_minutes=30)],
         priority=PriorityLevel.HIGH,
         priority_reasoning="r",

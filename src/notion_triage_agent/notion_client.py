@@ -114,9 +114,7 @@ class NotionClient:
         return NotionTask(
             id=page["id"],
             title=title or "(untitled)",
-            description=self._plain_text(
-                properties.get(DESCRIPTION_PROPERTY), "rich_text"
-            ),
+            description=self._plain_text(properties.get(DESCRIPTION_PROPERTY), "rich_text"),
             status=self._select_name(properties.get(STATUS_PROPERTY)),
             created_at=created_at,
             url=page.get("url"),

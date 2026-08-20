@@ -28,9 +28,7 @@ class SchemaAwareLLM:
 def test_pipeline_runs_start_to_end():
     graph = build_graph(
         FakeNotion([make_task("t1")]),
-        SchemaAwareLLM(
-            make_analysis("t1"), Recommendation(ranked_tasks=["t1"], reasoning="r")
-        ),
+        SchemaAwareLLM(make_analysis("t1"), Recommendation(ranked_tasks=["t1"], reasoning="r")),
     )
 
     state = AgentState.model_validate(graph.invoke(AgentState()))

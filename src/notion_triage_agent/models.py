@@ -1,19 +1,23 @@
 import operator
-from pydantic import BaseModel, Field
-from enum import Enum
 from datetime import datetime
+from enum import StrEnum
 from typing import Annotated
 
-class TaskCategory(str, Enum):
+from pydantic import BaseModel, Field
+
+
+class TaskCategory(StrEnum):
     TASK = "task"
     REFERENCE = "reference"
     IDEA = "idea"
 
-class PriorityLevel(str, Enum):
+
+class PriorityLevel(StrEnum):
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
 
 class NotionTask(BaseModel):
     id: str
@@ -23,6 +27,7 @@ class NotionTask(BaseModel):
     raw_properties: dict = Field(default_factory=dict)
     created_at: datetime | None = None
     url: str | None = None
+
 
 class Classification(BaseModel):
     category: TaskCategory = Field(
@@ -37,8 +42,10 @@ class Classification(BaseModel):
         "Use below 0.6 when the item is ambiguous or too short to judge.",
     )
     reasoning: str = Field(
-        description="One sentence explaining the category choice, citing specific wording from the task."
+        description="One sentence explaining the category choice, "
+        "citing specific wording from the task."
     )
+
 
 class ActionItem(BaseModel):
     description: str = Field(
@@ -51,8 +58,11 @@ class ActionItem(BaseModel):
         "Use null if the task lacks enough detail to estimate; do not guess.",
     )
 
+
 class TaskAnalysis(BaseModel):
-    task_id: str = Field(description="The Notion page ID of the task being analyzed, copied verbatim.")
+    task_id: str = Field(
+        description="The Notion page ID of the task being analyzed, copied verbatim."
+    )
     classification: Classification
     action_items: list[ActionItem] = Field(
         default_factory=list,
@@ -64,8 +74,10 @@ class TaskAnalysis(BaseModel):
         "'medium' for normal work, 'low' for optional or someday items."
     )
     priority_reasoning: str = Field(
-        description="One sentence justifying the priority, referencing urgency, blockers, or due dates."
+        description="One sentence justifying the priority, "
+        "referencing urgency, blockers, or due dates."
     )
+
 
 class Recommendation(BaseModel):
     ranked_tasks: list[str] = Field(
@@ -78,8 +90,10 @@ class Recommendation(BaseModel):
     )
     estimated_total_minutes: int | None = Field(
         default=None,
-        description="Sum of estimated minutes across ranked tasks, or null if too many estimates are missing.",
+        description="Sum of estimated minutes across ranked tasks, "
+        "or null if too many estimates are missing.",
     )
+
 
 class AgentState(BaseModel):
     raw_tasks: list[NotionTask] = Field(default_factory=list)
