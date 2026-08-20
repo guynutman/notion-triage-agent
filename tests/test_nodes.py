@@ -5,6 +5,9 @@ runs with no network, no API key, and deterministic model output. This is
 the payoff of injecting the clients instead of importing them.
 """
 
+import threading
+import time
+
 import pytest
 
 from notion_triage_agent import nodes
@@ -37,16 +40,30 @@ def make_analysis(task_id: str = "t1") -> TaskAnalysis:
 
 
 class FakeNotion:
-    """Satisfies the one method fetch_tasks uses."""
+    """Satisfies the NotionClient methods the nodes actually call."""
 
-    def __init__(self, tasks=None, error: Exception | None = None):
+    def __init__(self, tasks=None, error: Exception | None = None, write_error=None):
         self._tasks = tasks or []
         self._error = error
+        self._write_error = write_error
+        self.fetch_kwargs: dict = {}
+        self.created_properties: list[str] = []
+        self.updates: list[tuple[str, dict]] = []
 
-    def fetch_tasks(self, filter_status=None):
+    def fetch_tasks(self, filter_status=None, limit=None):
+        self.fetch_kwargs = {"filter_status": filter_status, "limit": limit}
         if self._error:
             raise self._error
-        return self._tasks
+        return self._tasks[:limit] if limit else self._tasks
+
+    def ensure_select_properties(self, names):
+        self.created_properties = list(names)
+        return list(names)
+
+    def update_task_properties(self, task_id, properties):
+        if self._write_error:
+            raise self._write_error
+        self.updates.append((task_id, properties))
 
 
 class FakeLLM:
@@ -110,7 +127,7 @@ def test_analyze_tasks_retries_once_before_giving_up():
     state = AgentState(raw_tasks=[make_task()])
     llm = FakeLLM(LLMError("truncated"), make_analysis())
 
-    update = nodes.analyze_tasks(state, llm_client=llm)
+    update = nodes.analyze_tasks(state, llm_client=llm, max_workers=1)
 
     assert len(llm.calls) == 2
     assert len(update["analyses"]) == 1
@@ -122,7 +139,8 @@ def test_one_failing_task_does_not_abort_the_batch():
     # t1 fails both attempts; t2 succeeds.
     llm = FakeLLM(LLMError("boom"), LLMError("boom"), make_analysis("t2"))
 
-    update = nodes.analyze_tasks(state, llm_client=llm)
+    # max_workers=1 keeps the queue-based fake deterministic.
+    update = nodes.analyze_tasks(state, llm_client=llm, max_workers=1)
 
     assert [a.task_id for a in update["analyses"]] == ["t2"]
     assert len(update["errors"]) == 1
@@ -188,3 +206,100 @@ def test_nodes_return_partial_updates_that_merge_into_state(update):
     """Nodes return a dict of changed fields, never a whole AgentState."""
     assert isinstance(update, dict)
     assert set(update) <= set(AgentState.model_fields)
+
+
+# --- write_back ----------------------------------------------------------
+
+
+def test_write_back_creates_columns_then_writes_each_task():
+    notion = FakeNotion()
+    state = AgentState(raw_tasks=[make_task("t1")], analyses=[make_analysis("t1")])
+
+    update = nodes.write_back(state, notion_client=notion)
+
+    assert notion.created_properties == [
+        nodes.CATEGORY_PROPERTY,
+        nodes.PRIORITY_PROPERTY,
+    ]
+    task_id, properties = notion.updates[0]
+    assert task_id == "t1"
+    assert properties[nodes.PRIORITY_PROPERTY] == {"select": {"name": "high"}}
+    assert properties[nodes.CATEGORY_PROPERTY] == {"select": {"name": "task"}}
+    assert update["errors"] == []
+
+
+def test_write_back_records_per_page_failures():
+    notion = FakeNotion(write_error=NotionAPIError("404 page not found"))
+    state = AgentState(raw_tasks=[make_task("t1")], analyses=[make_analysis("t1")])
+
+    update = nodes.write_back(state, notion_client=notion)
+
+    assert len(update["errors"]) == 1
+    assert "404" in update["errors"][0]
+
+
+def test_write_back_does_nothing_without_analyses():
+    notion = FakeNotion()
+    assert nodes.write_back(AgentState(), notion_client=notion) == {}
+    assert notion.updates == []
+
+
+# --- fetch options -------------------------------------------------------
+
+
+def test_fetch_tasks_passes_filter_and_limit_through():
+    notion = FakeNotion([make_task("t1"), make_task("t2")])
+
+    nodes.fetch_tasks(AgentState(), notion_client=notion, filter_status="Not started", limit=1)
+
+    assert notion.fetch_kwargs == {"filter_status": "Not started", "limit": 1}
+
+
+# --- routing -------------------------------------------------------------
+
+
+def test_router_skips_analysis_on_an_empty_fetch():
+    assert nodes.has_tasks(AgentState()) == "__end__"
+    assert nodes.has_tasks(AgentState(raw_tasks=[make_task()])) == "analyze_tasks"
+
+
+# --- parallelism ---------------------------------------------------------
+
+
+def test_parallel_analysis_preserves_input_order():
+    """Results are collected in submission order, not completion order."""
+
+    class SlowFirstLLM:
+        """Delays the first task so it would finish last if order were racy."""
+
+        def __init__(self):
+            self.lock = threading.Lock()
+
+        def generate(self, prompt, schema):
+            if "Task 0" in prompt:
+                time.sleep(0.05)
+            with self.lock:
+                pass
+            index = prompt.split("Title: Task ")[1].split("\n")[0]
+            return make_analysis(f"t{index}")
+
+    tasks = [make_task(f"t{i}", f"Task {i}") for i in range(4)]
+    update = nodes.analyze_tasks(
+        AgentState(raw_tasks=tasks), llm_client=SlowFirstLLM(), max_workers=4
+    )
+
+    assert [a.task_id for a in update["analyses"]] == ["t0", "t1", "t2", "t3"]
+
+
+def test_parallel_analysis_runs_concurrently():
+    """Four 50ms calls with four workers should take well under 200ms."""
+
+    class SleepyLLM:
+        def generate(self, prompt, schema):
+            time.sleep(0.05)
+            return make_analysis()
+
+    tasks = [make_task(f"t{i}", f"Task {i}") for i in range(4)]
+    started = time.perf_counter()
+    nodes.analyze_tasks(AgentState(raw_tasks=tasks), llm_client=SleepyLLM(), max_workers=4)
+    assert time.perf_counter() - started < 0.15

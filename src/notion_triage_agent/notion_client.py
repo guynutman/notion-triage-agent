@@ -12,6 +12,7 @@ from notion_triage_agent.models import NotionTask
 
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
+PAGE_SIZE = 100  # Notion's maximum rows per query response
 
 # v1 assumes these column names. TODO: make configurable.
 TITLE_PROPERTY = "Name"
@@ -35,7 +36,9 @@ class NotionClient:
             "Content-Type": "application/json",
         }
 
-    def fetch_tasks(self, filter_status: str | None = None) -> list[NotionTask]:
+    def fetch_tasks(
+        self, filter_status: str | None = None, limit: int | None = None
+    ) -> list[NotionTask]:
         """Query the database and return every matching row as a NotionTask.
 
         POSTs to /databases/{id}/query. Follows pagination until has_more is
@@ -44,6 +47,9 @@ class NotionClient:
 
         If filter_status is given, adds:
             {"filter": {"property": STATUS_PROPERTY, "select": {"equals": filter_status}}}
+
+        If limit is given, stops once that many rows have been collected,
+        including asking Notion for smaller pages.
 
         Raises NotionAPIError on any non-2xx response.
         """
@@ -57,11 +63,16 @@ class NotionClient:
 
         tasks: list[NotionTask] = []
         while True:
+            if limit is not None:
+                body["page_size"] = min(PAGE_SIZE, limit - len(tasks))
+
             response = httpx.post(url, headers=self._headers, json=body)
             data = self._json_or_raise(response)
 
             tasks.extend(self._parse_page(page) for page in data["results"])
 
+            if limit is not None and len(tasks) >= limit:
+                return tasks[:limit]
             if not data.get("has_more"):
                 return tasks
             body["start_cursor"] = data["next_cursor"]
@@ -78,6 +89,32 @@ class NotionClient:
             json={"properties": properties},
         )
         self._json_or_raise(response)
+
+    def ensure_select_properties(self, names: list[str]) -> list[str]:
+        """Add any missing select columns to the database, and report which.
+
+        Writing a priority back to Notion fails with a 400 if the column does
+        not exist, so the schema is patched before the first write rather than
+        producing one error per task.
+
+        Raises NotionAPIError on failure.
+        """
+        response = httpx.get(
+            f"{NOTION_API_BASE}/databases/{self._database_id}", headers=self._headers
+        )
+        existing = self._json_or_raise(response).get("properties", {})
+
+        missing = [name for name in names if name not in existing]
+        if not missing:
+            return []
+
+        response = httpx.patch(
+            f"{NOTION_API_BASE}/databases/{self._database_id}",
+            headers=self._headers,
+            json={"properties": {name: {"select": {}} for name in missing}},
+        )
+        self._json_or_raise(response)
+        return missing
 
     @staticmethod
     def _json_or_raise(response: httpx.Response) -> dict:

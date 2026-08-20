@@ -8,6 +8,8 @@ nodes can be tested with fakes. graph.py binds the real ones with
 functools.partial.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 from notion_triage_agent.llm import LLMClient, LLMError
 from notion_triage_agent.models import (
     AgentState,
@@ -16,6 +18,12 @@ from notion_triage_agent.models import (
     TaskAnalysis,
 )
 from notion_triage_agent.notion_client import NotionAPIError, NotionClient
+
+DEFAULT_WORKERS = 4
+
+# Properties written back to Notion when --write-back is used.
+CATEGORY_PROPERTY = "AI Category"
+PRIORITY_PROPERTY = "AI Priority"
 
 ANALYZE_PROMPT = """You are triaging one item from a personal task database.
 
@@ -38,49 +46,68 @@ priority, whether an item blocks other work, and how well scoped it is.
 Use only the task IDs listed above."""
 
 
-def fetch_tasks(state: AgentState, *, notion_client: NotionClient) -> dict:
+def fetch_tasks(
+    state: AgentState,
+    *,
+    notion_client: NotionClient,
+    filter_status: str | None = None,
+    limit: int | None = None,
+) -> dict:
     """Node 1: load tasks from Notion.
 
     Returns {"raw_tasks": [...]}. On API failure, records the error and
     returns no tasks so the pipeline can finish cleanly.
     """
     try:
-        tasks = notion_client.fetch_tasks()
+        tasks = notion_client.fetch_tasks(filter_status=filter_status, limit=limit)
     except NotionAPIError as exc:
         return {"raw_tasks": [], "errors": [f"fetch_tasks: {exc}"]}
     return {"raw_tasks": tasks}
 
 
-def analyze_tasks(state: AgentState, *, llm_client: LLMClient) -> dict:
+def analyze_tasks(
+    state: AgentState, *, llm_client: LLMClient, max_workers: int = DEFAULT_WORKERS
+) -> dict:
     """Node 2: analyze every fetched task, one LLM call each.
 
     One task failing does not abort the batch -- its error is recorded and
     the remaining tasks are still analyzed.
 
-    Sequential in v1. Tasks are independent, so this is the natural place to
-    parallelize (thread pool or asyncio.gather) once latency matters.
+    Tasks are independent, so the calls run on a thread pool: the work is
+    network-bound, so threads are enough and asyncio is not needed. Results
+    are collected in submission order, which keeps output deterministic no
+    matter what order the responses arrive in. Pass max_workers=1 to force
+    sequential execution.
     """
+    if not state.raw_tasks:
+        return {"analyses": [], "errors": []}
+
     analyses: list[TaskAnalysis] = []
     errors: list[str] = []
 
-    for task in state.raw_tasks:
-        prompt = ANALYZE_PROMPT.format(
-            title=task.title,
-            description=task.description or "(none)",
-            status=task.status or "(unset)",
-            task_id=task.id,
-        )
-        try:
-            analysis = _generate_with_retry(llm_client, prompt, TaskAnalysis)
-        except LLMError as exc:
-            errors.append(f"analyze_tasks[{task.title}]: {exc}")
-            continue
-
-        # The model is told to echo the task id, but is not trusted to.
-        analysis.task_id = task.id
-        analyses.append(analysis)
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(state.raw_tasks))) as pool:
+        futures = [pool.submit(_analyze_one, llm_client, task) for task in state.raw_tasks]
+        for task, future in zip(state.raw_tasks, futures, strict=True):
+            try:
+                analyses.append(future.result())
+            except LLMError as exc:
+                errors.append(f"analyze_tasks[{task.title}]: {exc}")
 
     return {"analyses": analyses, "errors": errors}
+
+
+def _analyze_one(llm_client: LLMClient, task: NotionTask) -> TaskAnalysis:
+    """Analyze a single task. Runs on a worker thread."""
+    prompt = ANALYZE_PROMPT.format(
+        title=task.title,
+        description=task.description or "(none)",
+        status=task.status or "(unset)",
+        task_id=task.id,
+    )
+    analysis = _generate_with_retry(llm_client, prompt, TaskAnalysis)
+    # The model is told to echo the task id, but is not trusted to.
+    analysis.task_id = task.id
+    return analysis
 
 
 def recommend(state: AgentState, *, llm_client: LLMClient) -> dict:
@@ -109,6 +136,43 @@ def recommend(state: AgentState, *, llm_client: LLMClient) -> dict:
     recommendation.ranked_tasks = ranked
 
     return {"recommendation": recommendation}
+
+
+def write_back(state: AgentState, *, notion_client: NotionClient) -> dict:
+    """Optional node 4: write each task's category and priority into Notion.
+
+    The select columns are created if the database does not have them, so a
+    first run against a plain task database works without manual setup.
+
+    One failed page does not stop the rest; every failure is recorded.
+    """
+    if not state.analyses:
+        return {}
+
+    errors: list[str] = []
+    try:
+        notion_client.ensure_select_properties([CATEGORY_PROPERTY, PRIORITY_PROPERTY])
+    except NotionAPIError as exc:
+        return {"errors": [f"write_back: could not prepare properties: {exc}"]}
+
+    for analysis in state.analyses:
+        try:
+            notion_client.update_task_properties(
+                analysis.task_id,
+                {
+                    CATEGORY_PROPERTY: {"select": {"name": analysis.classification.category.value}},
+                    PRIORITY_PROPERTY: {"select": {"name": analysis.priority.value}},
+                },
+            )
+        except NotionAPIError as exc:
+            errors.append(f"write_back[{analysis.task_id}]: {exc}")
+
+    return {"errors": errors}
+
+
+def has_tasks(state: AgentState) -> str:
+    """Conditional-edge router: skip the model entirely on an empty fetch."""
+    return "analyze_tasks" if state.raw_tasks else "__end__"
 
 
 def _generate_with_retry(llm_client: LLMClient, prompt: str, schema, attempts: int = 2):

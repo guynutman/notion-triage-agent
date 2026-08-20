@@ -37,16 +37,22 @@ every model call returns a validated object, never raw text.
                    ┌──────────────┐
    Notion DB ─────▶│ fetch_tasks  │  1 HTTP request (paginated)
                    └──────┬───────┘
+                          │
+                 nothing fetched? ────────────────▶ END
                           ▼
                    ┌──────────────┐
-                   │ analyze_tasks│  1 LLM call per task → TaskAnalysis
-                   └──────┬───────┘
+                   │ analyze_tasks│  1 LLM call per task, run in parallel
+                   └──────┬───────┘  → TaskAnalysis
                           ▼
                    ┌──────────────┐
                    │  recommend   │  1 LLM call → Recommendation
                    └──────┬───────┘
                           ▼
                    ranked CLI report
+                          │
+                   --write-back? ───▶ ┌────────────┐
+                                      │ write_back │ → back into Notion
+                                      └────────────┘
 ```
 
 Each step is a LangGraph node: a plain function that takes the pipeline state and
@@ -111,8 +117,27 @@ GEMINI_API_KEY=…
 ## Usage
 
 ```bash
-uv run notion-triage-agent
+uv run notion-triage-agent                          # triage everything
+uv run notion-triage-agent --status "Not started"   # only unstarted rows
+uv run notion-triage-agent --limit 10               # cap the number of tasks
+uv run notion-triage-agent --write-back             # push results back to Notion
+uv run notion-triage-agent --workers 8              # more parallel model calls
 ```
+
+| Flag           | Effect                                                                  |
+| -------------- | ----------------------------------------------------------------------- |
+| `--status`     | Server-side filter on the `Status` column, so unwanted rows never fetch  |
+| `--limit N`    | Stop after N tasks; also shrinks the requested page size                 |
+| `--workers N`  | Parallel model calls during analysis (default 4; `1` forces sequential)  |
+| `--write-back` | Writes each task's category and priority into Notion                     |
+
+### Write-back
+
+`--write-back` adds two select columns to your database, **`AI Category`** and
+**`AI Priority`**, and sets them on every analyzed row. The columns are created
+automatically on first use — the integration needs the *Update content* capability
+for this to work. Nothing else in your database is modified, and a page that fails
+to update is reported without stopping the rest.
 
 ## Architecture
 
@@ -151,6 +176,13 @@ returned value is overwritten with the real one regardless. Task IDs in the fina
 ranking are reconciled against the actual analyses — invented IDs are dropped and
 omitted ones appended — so the report can never reference a task that does not exist.
 
+### Concurrency
+
+`analyze_tasks` submits one model call per task to a `ThreadPoolExecutor`. The work
+is network-bound, so threads are sufficient and asyncio would add no throughput.
+Results are collected in *submission* order rather than completion order, so the
+report is identical no matter which response arrives first.
+
 ### Failure behaviour
 
 Errors accumulate in state instead of aborting the run. A model call that returns
@@ -165,7 +197,7 @@ append instead.
 ## Testing
 
 ```bash
-uv run pytest          # 35 tests, no network, no API keys
+uv run pytest          # 49 tests, no network, no API keys
 uv run ruff check .
 ```
 
@@ -173,9 +205,9 @@ uv run ruff check .
 | ----------------------- | ------------------------------------------------------------------ |
 | `test_models.py`        | Range and enum validation, nested parsing, empty-state construction |
 | `test_notion_client.py` | Property parsing against a saved API response fixture               |
-| `test_nodes.py`         | Retry, per-task failure isolation, ID reconciliation, prompt inputs |
-| `test_graph.py`         | The compiled pipeline end to end with fakes                        |
-| `test_cli.py`           | Config validation and report formatting                            |
+| `test_nodes.py`         | Retry, per-task failure isolation, ID reconciliation, prompt inputs, parallel ordering, write-back |
+| `test_graph.py`         | The compiled pipeline end to end with fakes, conditional routing, run options |
+| `test_cli.py`           | Argument parsing, config validation, report formatting             |
 
 CI runs lint, format check, and the full suite on Python 3.12 and 3.13.
 

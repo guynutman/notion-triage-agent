@@ -4,6 +4,7 @@ The only module that reads environment variables, prints to stdout, or has
 a __main__ block. Builds the dependencies, runs the graph, formats output.
 """
 
+import argparse
 import os
 import sys
 
@@ -12,6 +13,7 @@ from dotenv import load_dotenv
 from notion_triage_agent.graph import build_graph
 from notion_triage_agent.llm import GeminiClient
 from notion_triage_agent.models import AgentState, TaskAnalysis
+from notion_triage_agent.nodes import DEFAULT_WORKERS
 from notion_triage_agent.notion_client import NotionClient
 
 REQUIRED_VARS = ("NOTION_TOKEN", "NOTION_DATABASE_ID", "GEMINI_API_KEY")
@@ -22,6 +24,42 @@ PRIORITY_ICONS = {
     "medium": "🟡",
     "low": "⚪",
 }
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line options.
+
+    Takes argv so the parser is testable without touching sys.argv.
+    """
+    parser = argparse.ArgumentParser(
+        prog="notion-triage-agent",
+        description="Triage a Notion task database and rank what to work on next.",
+    )
+    parser.add_argument(
+        "--status",
+        metavar="NAME",
+        help='only triage rows with this Status, e.g. "Not started"',
+    )
+    parser.add_argument("--limit", type=int, metavar="N", help="triage at most N tasks")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        metavar="N",
+        help=f"parallel model calls during analysis (default {DEFAULT_WORKERS})",
+    )
+    parser.add_argument(
+        "--write-back",
+        action="store_true",
+        help="write the category and priority back into Notion",
+    )
+    args = parser.parse_args(argv)
+
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be at least 1")
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
+    return args
 
 
 def load_config() -> dict:
@@ -97,7 +135,8 @@ def _format_errors(state: AgentState) -> list[str]:
 
 
 def main() -> None:
-    """Load config, build dependencies, run the graph, print the report."""
+    """Parse args, build dependencies, run the graph, print the report."""
+    args = parse_args()
     try:
         config = load_config()
     except RuntimeError as exc:
@@ -107,7 +146,14 @@ def main() -> None:
     notion_client = NotionClient(config["NOTION_TOKEN"], config["NOTION_DATABASE_ID"])
     llm_client = GeminiClient(config["GEMINI_API_KEY"])
 
-    graph = build_graph(notion_client, llm_client)
+    graph = build_graph(
+        notion_client,
+        llm_client,
+        filter_status=args.status,
+        limit=args.limit,
+        max_workers=args.workers,
+        write_back=args.write_back,
+    )
     final_state = AgentState.model_validate(graph.invoke(AgentState()))
 
     print(format_results(final_state))

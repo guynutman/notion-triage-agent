@@ -6,7 +6,7 @@ testable without running the graph.
 
 import pytest
 
-from notion_triage_agent.cli import format_results, load_config
+from notion_triage_agent.cli import format_results, load_config, parse_args
 from notion_triage_agent.models import AgentState, Recommendation
 from tests.test_nodes import make_analysis, make_task
 
@@ -82,3 +82,27 @@ def test_errors_surface_in_the_report():
 
     assert "1 error(s)" in report
     assert "quota exceeded" in report
+
+
+# --- argument parsing ----------------------------------------------------
+
+
+def test_default_arguments():
+    args = parse_args([])
+    assert args.status is None
+    assert args.limit is None
+    assert args.write_back is False
+    assert args.workers >= 1
+
+
+def test_arguments_are_parsed():
+    args = parse_args(["--status", "Not started", "--limit", "3", "--write-back"])
+    assert args.status == "Not started"
+    assert args.limit == 3
+    assert args.write_back is True
+
+
+@pytest.mark.parametrize("argv", [["--limit", "0"], ["--workers", "0"]])
+def test_nonsensical_counts_are_rejected(argv):
+    with pytest.raises(SystemExit):
+        parse_args(argv)
