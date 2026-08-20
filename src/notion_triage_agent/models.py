@@ -95,10 +95,53 @@ class Recommendation(BaseModel):
     )
 
 
+class PlannedTask(BaseModel):
+    """One task scheduled into a specific day."""
+
+    task_id: str = Field(description="Task ID from the supplied list, copied verbatim.")
+    action_summary: str = Field(
+        description="What to actually do in this sitting, in one short imperative line."
+    )
+    estimated_minutes: int | None = Field(
+        default=None,
+        description="Minutes to reserve for this task on this day, or null if unknown.",
+    )
+
+
+class DayPlan(BaseModel):
+    """One day's worth of work."""
+
+    day: str = Field(
+        description="Day name, e.g. 'Monday'. Use the days given in the request, in order."
+    )
+    focus: str = Field(
+        description="One sentence naming the point of this day, e.g. what should be "
+        "finished by the end of it."
+    )
+    tasks: list[PlannedTask] = Field(
+        default_factory=list,
+        description="Tasks to work on this day. Leave empty for a deliberate rest or buffer day.",
+    )
+
+
+class WeeklyPlan(BaseModel):
+    """LLM output: the ranked tasks distributed across the week."""
+
+    days: list[DayPlan] = Field(
+        default_factory=list,
+        description="One entry per day of the week, in order.",
+    )
+    notes: str = Field(
+        description="Two or three sentences on the shape of the week: what was "
+        "front-loaded and why, and what to drop first if time runs short."
+    )
+
+
 class AgentState(BaseModel):
     raw_tasks: list[NotionTask] = Field(default_factory=list)
     analyses: list[TaskAnalysis] = Field(default_factory=list)
     recommendation: Recommendation | None = None
+    plan: WeeklyPlan | None = None
     # operator.add is a LangGraph reducer: node updates are appended to this
     # list instead of replacing it, so errors from every node survive the run.
     errors: Annotated[list[str], operator.add] = Field(default_factory=list)

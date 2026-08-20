@@ -16,10 +16,21 @@ from notion_triage_agent.models import (
     NotionTask,
     Recommendation,
     TaskAnalysis,
+    WeeklyPlan,
 )
 from notion_triage_agent.notion_client import NotionAPIError, NotionClient
 
 DEFAULT_WORKERS = 4
+DEFAULT_CAPACITY_MINUTES = 180
+WEEKDAYS = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+]
 
 # Properties written back to Notion when --write-back is used.
 CATEGORY_PROPERTY = "AI Category"
@@ -44,6 +55,21 @@ Here are the analyzed tasks:
 Rank them in the order they should be worked on, best first. Consider
 priority, whether an item blocks other work, and how well scoped it is.
 Use only the task IDs listed above."""
+
+PLAN_PROMPT = """You are laying out a work week.
+
+Days available: {days}
+Daily capacity: about {capacity} minutes of focused work.
+
+Tasks, already ranked best-first:
+
+{task_summaries}
+
+Distribute the tasks across the days. Front-load the high-priority and
+blocking work. Respect the daily capacity: it is better to leave a day
+lighter than to overload it, and a task with no estimate should be assumed
+to take about 45 minutes. A task may appear on more than one day if it is
+too large for a single sitting. Do not invent tasks or IDs."""
 
 
 def fetch_tasks(
@@ -168,6 +194,49 @@ def write_back(state: AgentState, *, notion_client: NotionClient) -> dict:
             errors.append(f"write_back[{analysis.task_id}]: {exc}")
 
     return {"errors": errors}
+
+
+def plan_week(
+    state: AgentState,
+    *,
+    llm_client: LLMClient,
+    days: list[str],
+    capacity_minutes: int,
+) -> dict:
+    """Optional node: schedule the ranked tasks across the coming days.
+
+    Runs after `recommend` so the model plans against an order that has
+    already been reconciled against the real task list. Task IDs are checked
+    again here -- a plan that references a task you do not have is worse than
+    no plan.
+    """
+    if not state.analyses:
+        return {"plan": None}
+
+    ordered = _ranked_analyses(state)
+    prompt = PLAN_PROMPT.format(
+        days=", ".join(days),
+        capacity=capacity_minutes,
+        task_summaries="\n".join(_summarize(analysis, state.raw_tasks) for analysis in ordered),
+    )
+    try:
+        plan = _generate_with_retry(llm_client, prompt, WeeklyPlan)
+    except LLMError as exc:
+        return {"plan": None, "errors": [f"plan_week: {exc}"]}
+
+    known_ids = {analysis.task_id for analysis in state.analyses}
+    for day in plan.days:
+        day.tasks = [task for task in day.tasks if task.task_id in known_ids]
+
+    return {"plan": plan}
+
+
+def _ranked_analyses(state: AgentState) -> list[TaskAnalysis]:
+    """Analyses in recommended order, falling back to fetch order."""
+    if not state.recommendation:
+        return state.analyses
+    by_id = {analysis.task_id: analysis for analysis in state.analyses}
+    return [by_id[task_id] for task_id in state.recommendation.ranked_tasks if task_id in by_id]
 
 
 def has_tasks(state: AgentState) -> str:

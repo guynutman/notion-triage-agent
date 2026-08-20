@@ -7,13 +7,18 @@ a __main__ block. Builds the dependencies, runs the graph, formats output.
 import argparse
 import os
 import sys
+from datetime import date
 
 from dotenv import load_dotenv
 
 from notion_triage_agent.graph import build_graph
 from notion_triage_agent.llm import GeminiClient
 from notion_triage_agent.models import AgentState, TaskAnalysis
-from notion_triage_agent.nodes import DEFAULT_WORKERS
+from notion_triage_agent.nodes import (
+    DEFAULT_CAPACITY_MINUTES,
+    DEFAULT_WORKERS,
+    WEEKDAYS,
+)
 from notion_triage_agent.notion_client import NotionClient
 
 REQUIRED_VARS = ("NOTION_TOKEN", "NOTION_DATABASE_ID", "GEMINI_API_KEY")
@@ -53,13 +58,43 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="write the category and priority back into Notion",
     )
+    parser.add_argument(
+        "--plan",
+        nargs="?",
+        const=len(WEEKDAYS),
+        type=int,
+        metavar="DAYS",
+        help=f"also schedule the tasks across the next DAYS days "
+        f"(default {len(WEEKDAYS)}, starting today)",
+    )
+    parser.add_argument(
+        "--capacity",
+        type=int,
+        default=DEFAULT_CAPACITY_MINUTES,
+        metavar="MINUTES",
+        help=f"focused minutes available per day when planning "
+        f"(default {DEFAULT_CAPACITY_MINUTES})",
+    )
     args = parser.parse_args(argv)
 
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be at least 1")
     if args.workers < 1:
         parser.error("--workers must be at least 1")
+    if args.plan is not None and not 1 <= args.plan <= 14:
+        parser.error("--plan must be between 1 and 14 days")
+    if args.capacity < 1:
+        parser.error("--capacity must be at least 1 minute")
     return args
+
+
+def upcoming_days(count: int, today: date | None = None) -> list[str]:
+    """Day names for the next `count` days, starting today.
+
+    Takes `today` so the result is testable without freezing the clock.
+    """
+    start = today or date.today()
+    return [WEEKDAYS[(start.weekday() + offset) % 7] for offset in range(count)]
 
 
 def load_config() -> dict:
@@ -103,7 +138,29 @@ def format_results(state: AgentState) -> str:
         if total:
             lines.append(f"   Total estimated: ~{total} min")
 
+    if state.plan:
+        lines += _format_plan(state.plan, titles)
+
     return "\n".join(lines + _format_errors(state))
+
+
+def _format_plan(plan, titles: dict) -> list[str]:
+    """Render the weekly schedule."""
+    lines = ["", "🗓  Plan"]
+    for day in plan.days:
+        total = sum(task.estimated_minutes or 0 for task in day.tasks)
+        header = f"   {day.day}" + (f"  (~{total} min)" if total else "")
+        lines.append(header)
+        lines.append(f"      {day.focus}")
+        for task in day.tasks:
+            estimate = f" (~{task.estimated_minutes} min)" if task.estimated_minutes else ""
+            title = titles.get(task.task_id, "(unknown)")
+            lines.append(f"      • {title}: {task.action_summary}{estimate}")
+        if not day.tasks:
+            lines.append("      • (open)")
+        lines.append("")
+    lines.append(f"   {plan.notes}")
+    return lines
 
 
 def _format_task(position: int, analysis: TaskAnalysis, title: str) -> list[str]:
@@ -153,6 +210,8 @@ def main() -> None:
         limit=args.limit,
         max_workers=args.workers,
         write_back=args.write_back,
+        plan_days=upcoming_days(args.plan) if args.plan else None,
+        capacity_minutes=args.capacity,
     )
     final_state = AgentState.model_validate(graph.invoke(AgentState()))
 

@@ -22,12 +22,14 @@ def build_graph(
     limit: int | None = None,
     max_workers: int = nodes.DEFAULT_WORKERS,
     write_back: bool = False,
+    plan_days: list[str] | None = None,
+    capacity_minutes: int = nodes.DEFAULT_CAPACITY_MINUTES,
 ):
     """Wire the triage pipeline and compile it.
 
-        START -> fetch_tasks -+-> analyze_tasks -> recommend -+-> END
-                              |                               |
-                              +-> END (nothing fetched)       +-> write_back -> END
+        START -> fetch_tasks -+-> analyze_tasks -> recommend -> [plan_week]
+                              |                                      |
+                              +-> END (nothing fetched)        [write_back] -> END
 
     Run options are bound here rather than carried in the state: they are
     fixed for the whole run, and keeping them out of AgentState means no node
@@ -65,13 +67,25 @@ def build_graph(
     )
     builder.add_edge("analyze_tasks", "recommend")
 
-    if write_back:
+    # Optional stages are appended in order, so the chain stays linear
+    # whichever combination of flags is used.
+    tail = "recommend"
+    if plan_days:
         builder.add_node(
-            "write_back", partial(nodes.write_back, notion_client=notion_client)
+            "plan_week",
+            partial(
+                nodes.plan_week,
+                llm_client=llm_client,
+                days=plan_days,
+                capacity_minutes=capacity_minutes,
+            ),
         )
-        builder.add_edge("recommend", "write_back")
-        builder.add_edge("write_back", END)
-    else:
-        builder.add_edge("recommend", END)
+        builder.add_edge(tail, "plan_week")
+        tail = "plan_week"
+    if write_back:
+        builder.add_node("write_back", partial(nodes.write_back, notion_client=notion_client))
+        builder.add_edge(tail, "write_back")
+        tail = "write_back"
+    builder.add_edge(tail, END)
 
     return builder.compile()

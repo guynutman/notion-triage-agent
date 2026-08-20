@@ -6,9 +6,14 @@ testable without running the graph.
 
 import pytest
 
-from notion_triage_agent.cli import format_results, load_config, parse_args
+from notion_triage_agent.cli import (
+    format_results,
+    load_config,
+    parse_args,
+    upcoming_days,
+)
 from notion_triage_agent.models import AgentState, Recommendation
-from tests.test_nodes import make_analysis, make_task
+from tests.test_nodes import _plan, make_analysis, make_task
 
 
 def test_load_config_names_every_missing_variable_at_once(monkeypatch):
@@ -106,3 +111,40 @@ def test_arguments_are_parsed():
 def test_nonsensical_counts_are_rejected(argv):
     with pytest.raises(SystemExit):
         parse_args(argv)
+
+
+# --- planning ------------------------------------------------------------
+
+
+def test_plan_flag_defaults_to_a_full_week():
+    assert parse_args(["--plan"]).plan == 7
+    assert parse_args(["--plan", "3"]).plan == 3
+    assert parse_args([]).plan is None
+
+
+@pytest.mark.parametrize("argv", [["--plan", "0"], ["--plan", "20"], ["--capacity", "0"]])
+def test_bad_planning_arguments_are_rejected(argv):
+    with pytest.raises(SystemExit):
+        parse_args(argv)
+
+
+def test_upcoming_days_starts_today_and_wraps():
+    from datetime import date
+
+    assert upcoming_days(3, date(2026, 8, 14)) == ["Friday", "Saturday", "Sunday"]
+    assert upcoming_days(9, date(2026, 8, 14))[7:] == ["Friday", "Saturday"]
+
+
+def test_plan_is_rendered_with_task_titles():
+    state = AgentState(
+        raw_tasks=[make_task("t1", "Fix auth")],
+        analyses=[make_analysis("t1")],
+        recommendation=Recommendation(ranked_tasks=["t1"], reasoning="r"),
+        plan=_plan("t1"),
+    )
+
+    report = format_results(state)
+
+    assert "🗓  Plan" in report
+    assert "Monday" in report
+    assert "• Fix auth: do" in report

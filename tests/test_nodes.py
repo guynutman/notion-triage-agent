@@ -16,11 +16,14 @@ from notion_triage_agent.models import (
     ActionItem,
     AgentState,
     Classification,
+    DayPlan,
     NotionTask,
+    PlannedTask,
     PriorityLevel,
     Recommendation,
     TaskAnalysis,
     TaskCategory,
+    WeeklyPlan,
 )
 from notion_triage_agent.notion_client import NotionAPIError
 
@@ -303,3 +306,65 @@ def test_parallel_analysis_runs_concurrently():
     started = time.perf_counter()
     nodes.analyze_tasks(AgentState(raw_tasks=tasks), llm_client=SleepyLLM(), max_workers=4)
     assert time.perf_counter() - started < 0.15
+
+
+# --- plan_week -----------------------------------------------------------
+
+
+def _plan(*task_ids):
+    return WeeklyPlan(
+        days=[
+            DayPlan(
+                day="Monday",
+                focus="f",
+                tasks=[PlannedTask(task_id=tid, action_summary="do") for tid in task_ids],
+            )
+        ],
+        notes="n",
+    )
+
+
+def test_plan_week_drops_task_ids_that_do_not_exist():
+    state = AgentState(
+        raw_tasks=[make_task("t1")],
+        analyses=[make_analysis("t1")],
+        recommendation=Recommendation(ranked_tasks=["t1"], reasoning="r"),
+    )
+    llm = FakeLLM(_plan("t1", "invented"))
+
+    update = nodes.plan_week(state, llm_client=llm, days=["Monday"], capacity_minutes=180)
+
+    assert [t.task_id for t in update["plan"].days[0].tasks] == ["t1"]
+
+
+def test_plan_week_plans_in_recommended_order():
+    """The prompt lists tasks in ranked order, not fetch order."""
+    state = AgentState(
+        raw_tasks=[make_task("t1", "First"), make_task("t2", "Second")],
+        analyses=[make_analysis("t1"), make_analysis("t2")],
+        recommendation=Recommendation(ranked_tasks=["t2", "t1"], reasoning="r"),
+    )
+    llm = FakeLLM(_plan("t2"))
+
+    nodes.plan_week(state, llm_client=llm, days=["Monday"], capacity_minutes=180)
+
+    prompt = llm.calls[0]
+    assert prompt.index("id=t2") < prompt.index("id=t1")
+    assert "Monday" in prompt and "180" in prompt
+
+
+def test_plan_week_skips_the_model_with_nothing_to_plan():
+    llm = FakeLLM()
+    update = nodes.plan_week(AgentState(), llm_client=llm, days=["Monday"], capacity_minutes=180)
+    assert update["plan"] is None
+    assert llm.calls == []
+
+
+def test_plan_week_records_model_failures():
+    state = AgentState(raw_tasks=[make_task("t1")], analyses=[make_analysis("t1")])
+    llm = FakeLLM(LLMError("quota"), LLMError("quota"))
+
+    update = nodes.plan_week(state, llm_client=llm, days=["Monday"], capacity_minutes=180)
+
+    assert update["plan"] is None
+    assert "quota" in update["errors"][0]

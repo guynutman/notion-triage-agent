@@ -48,11 +48,16 @@ every model call returns a validated object, never raw text.
                    │  recommend   │  1 LLM call → Recommendation
                    └──────┬───────┘
                           ▼
-                   ranked CLI report
                           │
-                   --write-back? ───▶ ┌────────────┐
-                                      │ write_back │ → back into Notion
-                                      └────────────┘
+                     --plan? ──▶ ┌────────────┐
+                                 │ plan_week  │  1 LLM call → WeeklyPlan
+                                 └─────┬──────┘
+                                       │
+               --write-back? ──▶ ┌────────────┐
+                                 │ write_back │ → back into Notion
+                                 └─────┬──────┘
+                                       ▼
+                                  CLI report
 ```
 
 Each step is a LangGraph node: a plain function that takes the pipeline state and
@@ -122,6 +127,8 @@ uv run notion-triage-agent --status "Not started"   # only unstarted rows
 uv run notion-triage-agent --limit 10               # cap the number of tasks
 uv run notion-triage-agent --write-back             # push results back to Notion
 uv run notion-triage-agent --workers 8              # more parallel model calls
+uv run notion-triage-agent --plan                   # + a day-by-day plan for the week
+uv run notion-triage-agent --plan 5 --capacity 120  # 5 days, 2 focused hours each
 ```
 
 | Flag           | Effect                                                                  |
@@ -130,6 +137,29 @@ uv run notion-triage-agent --workers 8              # more parallel model calls
 | `--limit N`    | Stop after N tasks; also shrinks the requested page size                 |
 | `--workers N`  | Parallel model calls during analysis (default 4; `1` forces sequential)  |
 | `--write-back` | Writes each task's category and priority into Notion                     |
+| `--plan [N]`   | Also schedule the ranked tasks across the next N days (default 7, from today) |
+| `--capacity N` | Focused minutes available per planning day (default 180)                |
+
+### Planning
+
+`--plan` adds a fourth model call that distributes the ranked tasks across the coming
+days, respecting a daily capacity and front-loading the urgent work:
+
+```
+🗓  Plan
+   Thursday  (~90 min)
+      Finish the reading session and get a guitar practice in.
+      • Reading: Read the next section (~45 min)
+      • Guitar: Practice the fingerstyle arrangement (~45 min)
+
+   Friday  (~45 min)
+      Give the loose idea enough shape to triage properly next week.
+      • Inbox item: Outline what this actually involves (~45 min)
+```
+
+It runs after `recommend`, so it plans against an ordering that has already been
+reconciled against the real task list, and every scheduled ID is checked again before
+rendering.
 
 ### Write-back
 
@@ -197,7 +227,7 @@ append instead.
 ## Testing
 
 ```bash
-uv run pytest          # 49 tests, no network, no API keys
+uv run pytest          # 59 tests, no network, no API keys
 uv run ruff check .
 ```
 
@@ -205,7 +235,7 @@ uv run ruff check .
 | ----------------------- | ------------------------------------------------------------------ |
 | `test_models.py`        | Range and enum validation, nested parsing, empty-state construction |
 | `test_notion_client.py` | Property parsing against a saved API response fixture               |
-| `test_nodes.py`         | Retry, per-task failure isolation, ID reconciliation, prompt inputs, parallel ordering, write-back |
+| `test_nodes.py`         | Retry, per-task failure isolation, ID reconciliation, prompt inputs, parallel ordering, write-back, planning |
 | `test_graph.py`         | The compiled pipeline end to end with fakes, conditional routing, run options |
 | `test_cli.py`           | Argument parsing, config validation, report formatting             |
 
