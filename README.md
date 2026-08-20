@@ -139,6 +139,21 @@ uv run notion-triage-agent --plan 5 --capacity 120  # 5 days, 2 focused hours ea
 | `--write-back` | Writes each task's category and priority into Notion                     |
 | `--plan [N]`   | Also schedule the ranked tasks across the next N days (default 7, from today) |
 | `--capacity N` | Focused minutes available per planning day (default 180)                |
+| `--include-done` | Also triage rows whose Status is `Done` (excluded by default)          |
+| `--model NAME` | Gemini model to use, or `$GEMINI_MODEL`                                 |
+| `--rpm N`      | Requests per minute to stay under (default 5, the free-tier limit)      |
+
+### Rate limits
+
+Gemini's free tier is tight — 5 requests/minute and as few as 20 requests/day per
+model — and this pipeline makes one call per task plus one or two more. So calls are
+spaced by a shared rate limiter across all worker threads, and a failed call is
+retried with the delay the server itself asked for rather than immediately, since an
+instant retry just re-enters the same closed quota window.
+
+If a run dies on `RESOURCE_EXHAUSTED`, either switch models (`--model
+gemini-3.5-flash-lite`) or wait for the daily quota to reset. Daily limits differ
+sharply between models.
 
 ### Planning
 
@@ -215,8 +230,8 @@ report is identical no matter which response arrives first.
 
 ### Failure behaviour
 
-Errors accumulate in state instead of aborting the run. A model call that returns
-unparseable output is retried once; if it fails again, that task is skipped, the
+Errors accumulate in state instead of aborting the run. A failed model call is
+retried up to three times with backoff; if it still fails, that task is skipped, the
 error is recorded, and the remaining tasks are still analyzed. A partially failed run
 prints its results with the failures listed underneath.
 
@@ -227,14 +242,15 @@ append instead.
 ## Testing
 
 ```bash
-uv run pytest          # 59 tests, no network, no API keys
+uv run pytest          # 75 tests, no network, no API keys
 uv run ruff check .
 ```
 
 | Suite                   | Covers                                                             |
 | ----------------------- | ------------------------------------------------------------------ |
 | `test_models.py`        | Range and enum validation, nested parsing, empty-state construction |
-| `test_notion_client.py` | Property parsing against a saved API response fixture               |
+| `test_notion_client.py` | Property parsing against a saved API response fixture, query filters |
+| `test_llm.py`           | Rate limiter spacing and thread sharing, error summarizing          |
 | `test_nodes.py`         | Retry, per-task failure isolation, ID reconciliation, prompt inputs, parallel ordering, write-back, planning |
 | `test_graph.py`         | The compiled pipeline end to end with fakes, conditional routing, run options |
 | `test_cli.py`           | Argument parsing, config validation, report formatting             |

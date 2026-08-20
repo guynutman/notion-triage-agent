@@ -81,6 +81,7 @@ def fetch_tasks(
     notion_client: NotionClient,
     filter_status: str | None = None,
     limit: int | None = None,
+    exclude_done: bool = True,
 ) -> dict:
     """Node 1: load tasks from Notion.
 
@@ -88,7 +89,9 @@ def fetch_tasks(
     returns no tasks so the pipeline can finish cleanly.
     """
     try:
-        tasks = notion_client.fetch_tasks(filter_status=filter_status, limit=limit)
+        tasks = notion_client.fetch_tasks(
+            filter_status=filter_status, limit=limit, exclude_done=exclude_done
+        )
     except NotionAPIError as exc:
         return {"raw_tasks": [], "errors": [f"fetch_tasks: {exc}"]}
     return {"raw_tasks": tasks}

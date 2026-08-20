@@ -53,8 +53,12 @@ class FakeNotion:
         self.created_properties: list[str] = []
         self.updates: list[tuple[str, dict]] = []
 
-    def fetch_tasks(self, filter_status=None, limit=None):
-        self.fetch_kwargs = {"filter_status": filter_status, "limit": limit}
+    def fetch_tasks(self, filter_status=None, limit=None, exclude_done=True):
+        self.fetch_kwargs = {
+            "filter_status": filter_status,
+            "limit": limit,
+            "exclude_done": exclude_done,
+        }
         if self._error:
             raise self._error
         return self._tasks[:limit] if limit else self._tasks
@@ -261,7 +265,11 @@ def test_fetch_tasks_passes_filter_and_limit_through():
 
     nodes.fetch_tasks(AgentState(), notion_client=notion, filter_status="Not started", limit=1)
 
-    assert notion.fetch_kwargs == {"filter_status": "Not started", "limit": 1}
+    assert notion.fetch_kwargs == {
+        "filter_status": "Not started",
+        "limit": 1,
+        "exclude_done": True,
+    }
 
 
 # --- routing -------------------------------------------------------------
@@ -324,6 +332,21 @@ def _plan(*task_ids):
                 day="Monday",
                 focus="f",
                 tasks=[PlannedTask(task_id=tid, action_summary="do") for tid in task_ids],
+            )
+        ],
+        notes="n",
+    )
+
+
+def _plan_with_minutes(task_id, minutes):
+    return WeeklyPlan(
+        days=[
+            DayPlan(
+                day="Monday",
+                focus="f",
+                tasks=[
+                    PlannedTask(task_id=task_id, action_summary="do", estimated_minutes=minutes)
+                ],
             )
         ],
         notes="n",

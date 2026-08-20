@@ -86,4 +86,8 @@ def test_run_options_reach_the_fetch_node():
 
     build_graph(notion, llm, filter_status="Not started", limit=5).invoke(AgentState())
 
-    assert notion.fetch_kwargs == {"filter_status": "Not started", "limit": 5}
+    assert notion.fetch_kwargs == {
+        "filter_status": "Not started",
+        "limit": 5,
+        "exclude_done": True,
+    }

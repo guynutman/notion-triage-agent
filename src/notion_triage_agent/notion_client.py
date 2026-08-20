@@ -19,6 +19,10 @@ TITLE_PROPERTY = "Name"
 DESCRIPTION_PROPERTY = "Description"
 STATUS_PROPERTY = "Status"
 
+# Finished work should never reach the model: it costs quota and pollutes
+# the ranking with items there is nothing to do about.
+DONE_STATUS = "Done"
+
 
 class NotionAPIError(Exception):
     """Raised when the Notion API returns a non-2xx response."""
@@ -37,7 +41,10 @@ class NotionClient:
         }
 
     def fetch_tasks(
-        self, filter_status: str | None = None, limit: int | None = None
+        self,
+        filter_status: str | None = None,
+        limit: int | None = None,
+        exclude_done: bool = True,
     ) -> list[NotionTask]:
         """Query the database and return every matching row as a NotionTask.
 
@@ -51,15 +58,17 @@ class NotionClient:
         If limit is given, stops once that many rows have been collected,
         including asking Notion for smaller pages.
 
+        Filtering happens server-side, so excluded rows are never fetched.
+        Rows with no status set are kept: an unset status means untriaged,
+        not finished.
+
         Raises NotionAPIError on any non-2xx response.
         """
         url = f"{NOTION_API_BASE}/databases/{self._database_id}/query"
         body: dict = {}
-        if filter_status is not None:
-            body["filter"] = {
-                "property": STATUS_PROPERTY,
-                "select": {"equals": filter_status},
-            }
+        query_filter = self._build_filter(filter_status, exclude_done)
+        if query_filter:
+            body["filter"] = query_filter
 
         tasks: list[NotionTask] = []
         while True:
@@ -76,6 +85,32 @@ class NotionClient:
             if not data.get("has_more"):
                 return tasks
             body["start_cursor"] = data["next_cursor"]
+
+    @staticmethod
+    def _build_filter(filter_status: str | None, exclude_done: bool) -> dict | None:
+        """Build the query filter, or None when everything should be fetched.
+
+        An explicit status wins outright -- asking for "Done" and also
+        excluding it would return nothing, which is never what was meant.
+        """
+        if filter_status is not None:
+            return {
+                "property": STATUS_PROPERTY,
+                "select": {"equals": filter_status},
+            }
+        if not exclude_done:
+            return None
+        # is_empty is needed alongside does_not_equal: Notion does not treat
+        # an unset select as "not equal to Done".
+        return {
+            "or": [
+                {
+                    "property": STATUS_PROPERTY,
+                    "select": {"does_not_equal": DONE_STATUS},
+                },
+                {"property": STATUS_PROPERTY, "select": {"is_empty": True}},
+            ]
+        }
 
     def update_task_properties(self, task_id: str, properties: dict) -> None:
         """PATCH /pages/{task_id} with {"properties": properties}.

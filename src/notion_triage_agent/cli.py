@@ -51,6 +51,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--limit", type=int, metavar="N", help="triage at most N tasks")
     parser.add_argument(
+        "--include-done",
+        action="store_true",
+        help='also triage rows whose Status is "Done" (excluded by default)',
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=DEFAULT_WORKERS,
@@ -135,8 +140,11 @@ def load_config() -> dict:
     return config
 
 
-def format_results(state: AgentState) -> str:
-    """Render the finished state as the CLI report."""
+def format_results(state: AgentState, capacity_minutes: int | None = None) -> str:
+    """Render the finished state as the CLI report.
+
+    capacity_minutes is only used to flag days the planner overfilled.
+    """
     if not state.analyses:
         lines = ["No tasks to triage."]
         return "\n".join(lines + _format_errors(state))
@@ -157,20 +165,35 @@ def format_results(state: AgentState) -> str:
         lines.append(f"   {state.recommendation.reasoning}")
         total = state.recommendation.estimated_total_minutes
         if total:
-            lines.append(f"   Total estimated: ~{total} min")
+            lines.append(
+                f"   Total estimated: ~{total} min of work across {len(state.analyses)} tasks"
+            )
 
     if state.plan:
-        lines += _format_plan(state.plan, titles)
+        lines += _format_plan(state.plan, titles, capacity_minutes)
 
     return "\n".join(lines + _format_errors(state))
 
 
-def _format_plan(plan, titles: dict) -> list[str]:
-    """Render the weekly schedule."""
+def _format_plan(plan, titles: dict, capacity_minutes: int | None) -> list[str]:
+    """Render the weekly schedule.
+
+    Scheduled minutes can exceed the recommendation's total: a task too big
+    for one sitting is split across days and counted once per session. The
+    footer says so, because two different totals with no explanation reads
+    as a bug.
+    """
     lines = ["", "🗓  Plan"]
+    scheduled = 0
+    sessions = 0
     for day in plan.days:
         total = sum(task.estimated_minutes or 0 for task in day.tasks)
+        scheduled += total
+        sessions += len(day.tasks)
+        over = capacity_minutes is not None and total > capacity_minutes
         header = f"   {day.day}" + (f"  (~{total} min)" if total else "")
+        if over:
+            header += f"  ⚠ over the {capacity_minutes} min capacity"
         lines.append(header)
         lines.append(f"      {day.focus}")
         for task in day.tasks:
@@ -180,6 +203,12 @@ def _format_plan(plan, titles: dict) -> list[str]:
         if not day.tasks:
             lines.append("      • (open)")
         lines.append("")
+    if scheduled:
+        lines.append(
+            f"   Scheduled: ~{scheduled} min over {sessions} "
+            f"session{'s' if sessions != 1 else ''} "
+            f"(large tasks are split across days)."
+        )
     lines.append(f"   {plan.notes}")
     return lines
 
@@ -231,6 +260,7 @@ def main() -> None:
         llm_client,
         filter_status=args.status,
         limit=args.limit,
+        exclude_done=not args.include_done,
         max_workers=args.workers,
         write_back=args.write_back,
         plan_days=upcoming_days(args.plan) if args.plan else None,
@@ -238,7 +268,7 @@ def main() -> None:
     )
     final_state = AgentState.model_validate(graph.invoke(AgentState()))
 
-    print(format_results(final_state))
+    print(format_results(final_state, capacity_minutes=args.capacity))
 
 
 if __name__ == "__main__":

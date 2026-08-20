@@ -13,7 +13,12 @@ from notion_triage_agent.cli import (
     upcoming_days,
 )
 from notion_triage_agent.models import AgentState, Recommendation
-from tests.test_nodes import _plan, make_analysis, make_task
+from tests.test_nodes import (
+    _plan,
+    _plan_with_minutes,
+    make_analysis,
+    make_task,
+)
 
 
 def test_load_config_names_every_missing_variable_at_once(monkeypatch):
@@ -156,3 +161,34 @@ def test_model_defaults_and_overrides(monkeypatch):
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
     assert parse_args([]).model == DEFAULT_MODEL
     assert parse_args(["--model", "gemini-3.1-flash-lite"]).model == ("gemini-3.1-flash-lite")
+
+
+def test_include_done_flag():
+    assert parse_args([]).include_done is False
+    assert parse_args(["--include-done"]).include_done is True
+
+
+def test_plan_footer_explains_the_second_total():
+    """Two unexplained totals read as a bug; the footer names the reason."""
+    state = AgentState(
+        raw_tasks=[make_task("t1", "Big task")],
+        analyses=[make_analysis("t1")],
+        recommendation=Recommendation(ranked_tasks=["t1"], reasoning="r"),
+        plan=_plan_with_minutes("t1", 90),
+    )
+
+    report = format_results(state)
+
+    assert "Scheduled: ~90 min over 1 session " in report
+    assert "split across days" in report
+
+
+def test_overfilled_days_are_flagged():
+    state = AgentState(
+        raw_tasks=[make_task("t1", "Big task")],
+        analyses=[make_analysis("t1")],
+        plan=_plan_with_minutes("t1", 200),
+    )
+
+    assert "over the 150 min capacity" in format_results(state, capacity_minutes=150)
+    assert "over the" not in format_results(state, capacity_minutes=240)

@@ -79,3 +79,26 @@ def test_page_missing_optional_fields_still_parses(client):
         None,
         None,
     )
+
+
+# --- query filters -------------------------------------------------------
+
+
+def test_done_rows_are_excluded_by_default():
+    """Finished work costs quota and pollutes the ranking, so it never fetches."""
+    built = NotionClient._build_filter(None, exclude_done=True)
+    conditions = built["or"]
+    assert conditions[0]["select"] == {"does_not_equal": "Done"}
+    # Notion does not treat an unset select as "not equal to Done", so rows
+    # with no status would vanish without this second condition.
+    assert conditions[1]["select"] == {"is_empty": True}
+
+
+def test_an_explicit_status_wins_over_the_done_exclusion():
+    """--status Done must return Done rows, not nothing."""
+    built = NotionClient._build_filter("Done", exclude_done=True)
+    assert built == {"property": "Status", "select": {"equals": "Done"}}
+
+
+def test_no_filter_when_nothing_is_excluded():
+    assert NotionClient._build_filter(None, exclude_done=False) is None

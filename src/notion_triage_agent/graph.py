@@ -20,6 +20,7 @@ def build_graph(
     *,
     filter_status: str | None = None,
     limit: int | None = None,
+    exclude_done: bool = True,
     max_workers: int = nodes.DEFAULT_WORKERS,
     write_back: bool = False,
     plan_days: list[str] | None = None,
@@ -48,6 +49,7 @@ def build_graph(
             notion_client=notion_client,
             filter_status=filter_status,
             limit=limit,
+            exclude_done=exclude_done,
         ),
     )
     builder.add_node(
