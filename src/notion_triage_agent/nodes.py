@@ -8,6 +8,7 @@ nodes can be tested with fakes. graph.py binds the real ones with
 functools.partial.
 """
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from notion_triage_agent.llm import LLMClient, LLMError
@@ -21,6 +22,8 @@ from notion_triage_agent.models import (
 from notion_triage_agent.notion_client import NotionAPIError, NotionClient
 
 DEFAULT_WORKERS = 4
+BACKOFF_SECONDS = 2.0
+RETRY_ATTEMPTS = 3
 DEFAULT_CAPACITY_MINUTES = 180
 WEEKDAYS = [
     "Monday",
@@ -244,18 +247,27 @@ def has_tasks(state: AgentState) -> str:
     return "analyze_tasks" if state.raw_tasks else "__end__"
 
 
-def _generate_with_retry(llm_client: LLMClient, prompt: str, schema, attempts: int = 2):
-    """Call the model, retrying once before giving up.
+def _generate_with_retry(
+    llm_client: LLMClient, prompt: str, schema, attempts: int = RETRY_ATTEMPTS
+):
+    """Call the model, retrying with backoff before giving up.
 
-    Structured-output failures are usually transient -- a truncated response
-    or a malformed field -- so a second attempt is cheap and often works.
+    Structured-output failures are usually transient -- a truncated response,
+    a malformed field, a rate limit -- so retrying is cheap and often works.
+    Retrying *immediately* is not: a quota error re-fires into the same closed
+    window. So we wait for exactly as long as the server asked when it told
+    us (`retry_after`), and fall back to exponential backoff when it did not.
     """
     last_error: LLMError | None = None
-    for _ in range(attempts):
+    for attempt in range(attempts):
         try:
             return llm_client.generate(prompt, schema)
         except LLMError as exc:
             last_error = exc
+            if attempt == attempts - 1:
+                break
+            delay = getattr(exc, "retry_after", None)
+            time.sleep(delay if delay is not None else BACKOFF_SECONDS * 2**attempt)
     raise last_error
 
 

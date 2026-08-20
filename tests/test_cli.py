@@ -148,3 +148,11 @@ def test_plan_is_rendered_with_task_titles():
     assert "🗓  Plan" in report
     assert "Monday" in report
     assert "• Fix auth: do" in report
+
+
+def test_model_defaults_and_overrides(monkeypatch):
+    from notion_triage_agent.llm import DEFAULT_MODEL
+
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    assert parse_args([]).model == DEFAULT_MODEL
+    assert parse_args(["--model", "gemini-3.1-flash-lite"]).model == ("gemini-3.1-flash-lite")

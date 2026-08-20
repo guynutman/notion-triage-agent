@@ -12,7 +12,11 @@ from datetime import date
 from dotenv import load_dotenv
 
 from notion_triage_agent.graph import build_graph
-from notion_triage_agent.llm import GeminiClient
+from notion_triage_agent.llm import (
+    DEFAULT_MODEL,
+    DEFAULT_REQUESTS_PER_MINUTE,
+    GeminiClient,
+)
 from notion_triage_agent.models import AgentState, TaskAnalysis
 from notion_triage_agent.nodes import (
     DEFAULT_CAPACITY_MINUTES,
@@ -75,6 +79,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"focused minutes available per day when planning "
         f"(default {DEFAULT_CAPACITY_MINUTES})",
     )
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
+        metavar="NAME",
+        help=f"Gemini model to use (default {DEFAULT_MODEL}, or $GEMINI_MODEL). "
+        f"Free-tier daily quotas differ sharply between models.",
+    )
+    parser.add_argument(
+        "--rpm",
+        type=int,
+        default=DEFAULT_REQUESTS_PER_MINUTE,
+        metavar="N",
+        help=f"model requests per minute to stay under "
+        f"(default {DEFAULT_REQUESTS_PER_MINUTE}, the Gemini free-tier limit)",
+    )
     args = parser.parse_args(argv)
 
     if args.limit is not None and args.limit < 1:
@@ -85,6 +104,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--plan must be between 1 and 14 days")
     if args.capacity < 1:
         parser.error("--capacity must be at least 1 minute")
+    if args.rpm < 1:
+        parser.error("--rpm must be at least 1")
     return args
 
 
@@ -201,7 +222,9 @@ def main() -> None:
         raise SystemExit(1) from exc
 
     notion_client = NotionClient(config["NOTION_TOKEN"], config["NOTION_DATABASE_ID"])
-    llm_client = GeminiClient(config["GEMINI_API_KEY"])
+    llm_client = GeminiClient(
+        config["GEMINI_API_KEY"], model=args.model, requests_per_minute=args.rpm
+    )
 
     graph = build_graph(
         notion_client,

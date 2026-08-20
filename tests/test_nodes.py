@@ -90,6 +90,12 @@ class FakeLLM:
         return response
 
 
+@pytest.fixture(autouse=True)
+def no_backoff_sleeping(monkeypatch):
+    """Retry backoff is real time; tests should not pay for it."""
+    monkeypatch.setattr(nodes.time, "sleep", lambda _seconds: None)
+
+
 # --- fetch_tasks ---------------------------------------------------------
 
 
@@ -126,7 +132,7 @@ def test_analyze_tasks_overwrites_the_model_supplied_task_id():
     assert update["analyses"][0].task_id == "real-id"
 
 
-def test_analyze_tasks_retries_once_before_giving_up():
+def test_analyze_tasks_retries_before_giving_up():
     state = AgentState(raw_tasks=[make_task()])
     llm = FakeLLM(LLMError("truncated"), make_analysis())
 
@@ -140,7 +146,7 @@ def test_analyze_tasks_retries_once_before_giving_up():
 def test_one_failing_task_does_not_abort_the_batch():
     state = AgentState(raw_tasks=[make_task("t1"), make_task("t2", "Other")])
     # t1 fails both attempts; t2 succeeds.
-    llm = FakeLLM(LLMError("boom"), LLMError("boom"), make_analysis("t2"))
+    llm = FakeLLM(*[LLMError("boom")] * nodes.RETRY_ATTEMPTS, make_analysis("t2"))
 
     # max_workers=1 keeps the queue-based fake deterministic.
     update = nodes.analyze_tasks(state, llm_client=llm, max_workers=1)
@@ -185,7 +191,7 @@ def test_recommend_drops_hallucinated_ids_and_restores_dropped_ones():
 
 def test_recommend_records_the_error_when_the_model_fails():
     state = AgentState(raw_tasks=[make_task()], analyses=[make_analysis()])
-    llm = FakeLLM(LLMError("quota"), LLMError("quota"))
+    llm = FakeLLM(*[LLMError("quota")] * nodes.RETRY_ATTEMPTS)
 
     update = nodes.recommend(state, llm_client=llm)
 
@@ -362,9 +368,30 @@ def test_plan_week_skips_the_model_with_nothing_to_plan():
 
 def test_plan_week_records_model_failures():
     state = AgentState(raw_tasks=[make_task("t1")], analyses=[make_analysis("t1")])
-    llm = FakeLLM(LLMError("quota"), LLMError("quota"))
+    llm = FakeLLM(*[LLMError("quota")] * nodes.RETRY_ATTEMPTS)
 
     update = nodes.plan_week(state, llm_client=llm, days=["Monday"], capacity_minutes=180)
 
     assert update["plan"] is None
     assert "quota" in update["errors"][0]
+
+
+def test_retry_waits_for_the_delay_the_server_asked_for(monkeypatch):
+    """A quota error retried immediately just re-enters the closed window."""
+    slept: list[float] = []
+    monkeypatch.setattr(nodes.time, "sleep", slept.append)
+
+    llm = FakeLLM(LLMError("429", retry_after=7.5), make_analysis())
+    nodes.analyze_tasks(AgentState(raw_tasks=[make_task()]), llm_client=llm, max_workers=1)
+
+    assert slept == [7.5]
+
+
+def test_retry_backs_off_exponentially_without_a_server_hint(monkeypatch):
+    slept: list[float] = []
+    monkeypatch.setattr(nodes.time, "sleep", slept.append)
+
+    llm = FakeLLM(LLMError("boom"), LLMError("boom"), make_analysis())
+    nodes.analyze_tasks(AgentState(raw_tasks=[make_task()]), llm_client=llm, max_workers=1)
+
+    assert slept == [nodes.BACKOFF_SECONDS, nodes.BACKOFF_SECONDS * 2]
