@@ -19,7 +19,10 @@ __all__ = ["DEFAULT_MODEL", "GeminiClient", "LLMClient", "LLMError", "RateLimite
 
 T = TypeVar("T", bound=BaseModel)
 
-DEFAULT_MODEL = "gemini-3.6-flash"
+# Flash-lite: the larger free-tier daily quota covers a full run of a ~20-task
+# database plus a plan; full flash ran out partway through one. Use --model
+# for a stronger model if you have paid quota.
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 # Gemini's free tier allows 5 requests/minute per model. Paid tiers are far
 # higher -- raise this if you have quota.

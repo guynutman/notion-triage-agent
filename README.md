@@ -154,8 +154,9 @@ instant retry just re-enters the same closed quota window.
 When the server asks for a wait longer than a few minutes, the *daily* quota is
 spent. The client then stops calling that model for the rest of the run, so the
 remaining tasks fall back to `needs_review` within seconds instead of the run sleeping
-for hours. Switch models (`--model gemini-flash-latest`) or wait for the reset. Daily limits
-differ sharply between models.
+for hours. Switch models (`--model gemini-flash-latest`) or wait for the reset. The
+default, `gemini-3.1-flash-lite`, was picked because its free daily quota covers a full
+run; daily limits differ sharply between models.
 
 ### Planning
 
@@ -249,7 +250,7 @@ append instead.
 ## Testing
 
 ```bash
-uv run pytest          # 75 tests, no network, no API keys
+uv run pytest          # 97 tests, no network, no API keys
 uv run ruff check .
 ```
 
