@@ -186,6 +186,21 @@ def test_model_cannot_claim_a_status():
     assert update["analyses"][0].status == AnalysisStatus.ANALYZED
 
 
+def test_every_prompt_tells_the_model_what_day_it_is():
+    """Without a date the model reads a past deadline as upcoming."""
+    from datetime import date
+
+    today = date(2026, 11, 11)
+    state = AgentState(raw_tasks=[make_task()], analyses=[make_analysis()])
+    llm = FakeLLM(make_analysis(), Recommendation(ranked_tasks=["t1"], reasoning="r"), _plan("t1"))
+
+    nodes.analyze_tasks(AgentState(raw_tasks=[make_task()]), llm_client=llm, today=today)
+    nodes.recommend(state, llm_client=llm, today=today)
+    nodes.plan_week(state, llm_client=llm, days=["Monday"], capacity_minutes=60, today=today)
+
+    assert all("Wednesday, November 11, 2026 (2026-11-11)" in p for p in llm.calls)
+
+
 def test_prompt_marks_absent_fields_explicitly():
     """None must not reach the prompt as the literal string "None"."""
     state = AgentState(raw_tasks=[NotionTask(id="t1", title="Bare")])

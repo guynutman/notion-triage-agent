@@ -4,6 +4,7 @@ Pure orchestration: no LLM calls, no HTTP, no logic. Read this file to see
 the pipeline at a glance; read nodes.py to see what each step does.
 """
 
+from datetime import date
 from functools import partial
 
 from langgraph.graph import END, START, StateGraph
@@ -23,6 +24,7 @@ def build_graph(
     write_back: bool = False,
     plan_days: list[str] | None = None,
     capacity_minutes: int = nodes.DEFAULT_CAPACITY_MINUTES,
+    today: date | None = None,
 ):
     """Wire the triage pipeline and compile it.
 
@@ -52,9 +54,9 @@ def build_graph(
     )
     builder.add_node(
         "analyze_tasks",
-        partial(nodes.analyze_tasks, llm_client=llm_client, max_workers=max_workers),
+        partial(nodes.analyze_tasks, llm_client=llm_client, max_workers=max_workers, today=today),
     )
-    builder.add_node("recommend", partial(nodes.recommend, llm_client=llm_client))
+    builder.add_node("recommend", partial(nodes.recommend, llm_client=llm_client, today=today))
 
     builder.add_edge(START, "fetch_tasks")
 
@@ -78,6 +80,7 @@ def build_graph(
                 llm_client=llm_client,
                 days=plan_days,
                 capacity_minutes=capacity_minutes,
+                today=today,
             ),
         )
         builder.add_edge(tail, "plan_week")

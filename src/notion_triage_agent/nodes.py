@@ -13,6 +13,7 @@ LLMClient protocols, never the Notion or Gemini adapters behind them.
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 
 from notion_triage_agent.models import (
     AgentState,
@@ -48,16 +49,21 @@ CATEGORY_PROPERTY = "AI Category"
 PRIORITY_PROPERTY = "AI Priority"
 
 ANALYZE_PROMPT = """You are triaging one item from a personal task database.
+{today}
 
 Title: {title}
 Description: {description}
 Status: {status}
 
 Classify the item, extract its concrete action items, and assign a priority.
+Judge any dates in the text against today's date: a deadline that has
+already passed is not "upcoming" -- say it has passed, and prioritize on
+whether anything can still be done about it.
 Set task_id to exactly: {task_id}
 Base your reasoning only on the text above. Do not invent details."""
 
 RECOMMEND_PROMPT = """You are advising on what to work on next.
+{today}
 
 Here are the analyzed tasks:
 
@@ -68,6 +74,7 @@ priority, whether an item blocks other work, and how well scoped it is.
 Use only the task IDs listed above."""
 
 PLAN_PROMPT = """You are laying out a work week.
+{today}
 
 Days available: {days}
 Daily capacity: about {capacity} minutes of focused work.
@@ -106,7 +113,11 @@ def fetch_tasks(
 
 
 def analyze_tasks(
-    state: AgentState, *, llm_client: LLMClient, max_workers: int = DEFAULT_WORKERS
+    state: AgentState,
+    *,
+    llm_client: LLMClient,
+    max_workers: int = DEFAULT_WORKERS,
+    today: date | None = None,
 ) -> dict:
     """Node 2: analyze every fetched task, one LLM call each.
 
@@ -128,7 +139,7 @@ def analyze_tasks(
     errors: list[str] = []
 
     with ThreadPoolExecutor(max_workers=min(max_workers, len(state.raw_tasks))) as pool:
-        futures = [pool.submit(_analyze_one, llm_client, task) for task in state.raw_tasks]
+        futures = [pool.submit(_analyze_one, llm_client, task, today) for task in state.raw_tasks]
         for task, future in zip(state.raw_tasks, futures, strict=True):
             try:
                 analyses.append(future.result())
@@ -139,9 +150,10 @@ def analyze_tasks(
     return {"analyses": analyses, "errors": errors}
 
 
-def _analyze_one(llm_client: LLMClient, task: NotionTask) -> TaskAnalysis:
+def _analyze_one(llm_client: LLMClient, task: NotionTask, today: date | None) -> TaskAnalysis:
     """Analyze a single task. Runs on a worker thread."""
     prompt = ANALYZE_PROMPT.format(
+        today=_today_line(today),
         title=task.title,
         description=task.description or "(none)",
         status=task.status or "(unset)",
@@ -155,7 +167,7 @@ def _analyze_one(llm_client: LLMClient, task: NotionTask) -> TaskAnalysis:
     return analysis
 
 
-def recommend(state: AgentState, *, llm_client: LLMClient) -> dict:
+def recommend(state: AgentState, *, llm_client: LLMClient, today: date | None = None) -> dict:
     """Node 3: rank the analyzed tasks into a recommendation.
 
     Returns {"recommendation": None} when there is nothing to rank, or when
@@ -167,9 +179,10 @@ def recommend(state: AgentState, *, llm_client: LLMClient) -> dict:
         return {"recommendation": None}
 
     prompt = RECOMMEND_PROMPT.format(
+        today=_today_line(today),
         task_summaries="\n".join(
             _summarize(analysis, state.raw_tasks) for analysis in state.analyses
-        )
+        ),
     )
     try:
         recommendation = _generate_with_retry(llm_client, prompt, Recommendation)
@@ -226,6 +239,7 @@ def plan_week(
     llm_client: LLMClient,
     days: list[str],
     capacity_minutes: int,
+    today: date | None = None,
 ) -> dict:
     """Optional node: schedule the ranked tasks across the coming days.
 
@@ -239,6 +253,7 @@ def plan_week(
 
     ordered = _ranked_analyses(state)
     prompt = PLAN_PROMPT.format(
+        today=_today_line(today),
         days=", ".join(days),
         capacity=capacity_minutes,
         task_summaries="\n".join(_summarize(analysis, state.raw_tasks) for analysis in ordered),
@@ -290,6 +305,12 @@ def _generate_with_retry(
             delay = getattr(exc, "retry_after", None)
             time.sleep(delay if delay is not None else BACKOFF_SECONDS * 2**attempt)
     raise last_error
+
+
+def _today_line(today: date | None) -> str:
+    """The model has no clock; without this it reads every deadline as future."""
+    today = today or date.today()
+    return f"Today is {today:%A, %B %d, %Y} ({today.isoformat()})."
 
 
 def _summarize(analysis: TaskAnalysis, raw_tasks: list[NotionTask]) -> str:
