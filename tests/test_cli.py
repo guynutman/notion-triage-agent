@@ -238,3 +238,22 @@ def test_overfilled_days_are_flagged():
 
     assert "over the 150 min capacity" in format_results(state, capacity_minutes=150)
     assert "over the" not in format_results(state, capacity_minutes=240)
+
+
+def test_progress_goes_to_stderr_and_the_final_state_is_returned():
+    import io
+
+    from notion_triage_agent.cli import run_with_progress
+    from notion_triage_agent.graph import build_graph
+    from tests.test_nodes import FakeLLM, FakeNotion
+
+    graph = build_graph(
+        FakeNotion([make_task("t1")]),
+        FakeLLM(make_analysis("t1"), Recommendation(ranked_tasks=["t1"], reasoning="r")),
+    )
+    out = io.StringIO()
+
+    state = run_with_progress(graph, rpm=5, out=out)
+
+    assert "Fetched 1 tasks" in out.getvalue()
+    assert state.recommendation.ranked_tasks == ["t1"]

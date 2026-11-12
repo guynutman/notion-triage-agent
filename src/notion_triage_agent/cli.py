@@ -273,6 +273,30 @@ def _format_errors(state: AgentState) -> list[str]:
     return ["", f"⚠️  {len(state.errors)} error(s):"] + [f"   - {error}" for error in state.errors]
 
 
+def run_with_progress(graph, rpm: int, out=sys.stderr) -> AgentState:
+    """Run the graph, reporting each finished step on stderr.
+
+    On the free tier a 20-task run takes several minutes; with no output it
+    is indistinguishable from a hang. Progress goes to stderr so stdout stays
+    a clean, pipeable report.
+    """
+    final: dict = {}
+    for chunk in graph.stream(AgentState(), stream_mode="values"):
+        final = chunk
+        state = AgentState.model_validate(chunk)
+        if state.raw_tasks and not state.analyses:
+            count = len(state.raw_tasks)
+            minutes = max(1, round((count + 2) / rpm))
+            print(
+                f"Fetched {count} tasks. Analyzing — about {minutes} min at {rpm} requests/min…",
+                file=out,
+                flush=True,
+            )
+        elif state.analyses and state.recommendation is None and not state.plan:
+            print("Analysis done. Ranking…", file=out, flush=True)
+    return AgentState.model_validate(final)
+
+
 def main() -> None:
     """Parse args, build dependencies, run the graph, print the report."""
     args = parse_args()
@@ -298,7 +322,7 @@ def main() -> None:
         plan_days=upcoming_days(args.plan) if args.plan else None,
         capacity_minutes=args.capacity,
     )
-    final_state = AgentState.model_validate(graph.invoke(AgentState()))
+    final_state = run_with_progress(graph, rpm=args.rpm)
 
     print(format_results(final_state, capacity_minutes=args.capacity))
 
