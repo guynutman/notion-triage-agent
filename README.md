@@ -151,9 +151,11 @@ spaced by a shared rate limiter across all worker threads, and a failed call is
 retried once with the delay the server itself asked for rather than immediately, since an
 instant retry just re-enters the same closed quota window.
 
-If a run dies on `RESOURCE_EXHAUSTED`, either switch models (`--model
-gemini-3.5-flash-lite`) or wait for the daily quota to reset. Daily limits differ
-sharply between models.
+When the server asks for a wait longer than a few minutes, the *daily* quota is
+spent. The client then stops calling that model for the rest of the run, so the
+remaining tasks fall back to `needs_review` within seconds instead of the run sleeping
+for hours. Switch models (`--model gemini-flash-latest`) or wait for the reset. Daily limits
+differ sharply between models.
 
 ### Planning
 

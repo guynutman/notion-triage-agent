@@ -25,6 +25,9 @@ DEFAULT_MODEL = "gemini-3.6-flash"
 # higher -- raise this if you have quota.
 DEFAULT_REQUESTS_PER_MINUTE = 5
 
+# A requested retry delay longer than this means the daily quota is spent.
+QUOTA_EXHAUSTED_SECONDS = 300.0
+
 _RETRY_DELAY = re.compile(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'")
 
 
@@ -66,6 +69,10 @@ class GeminiClient:
         self._client = genai.Client(api_key=api_key)
         self._model = model
         self._limiter = RateLimiter(requests_per_minute)
+        # Set once the server says the quota is exhausted for longer than a
+        # retry is worth. Every later call then fails instantly instead of
+        # spending a rate-limit slot just to be told the same thing.
+        self._exhausted: LLMError | None = None
 
     def generate(self, prompt: str, schema: type[T]) -> T:
         """Call Gemini in JSON mode with `schema` as the response schema.
@@ -73,6 +80,8 @@ class GeminiClient:
         Raises LLMError if the call fails or the response cannot be parsed
         into `schema`.
         """
+        if self._exhausted is not None:
+            raise self._exhausted
         self._limiter.acquire()
         try:
             response = self._client.models.generate_content(
@@ -84,10 +93,18 @@ class GeminiClient:
                 },
             )
         except Exception as exc:  # network, auth, quota, safety blocks
-            raise LLMError(
+            error = LLMError(
                 f"{self._model} call failed: {_summarize_error(exc)}",
                 retry_after=_retry_after(exc),
-            ) from exc
+            )
+            if error.retry_after is not None and error.retry_after > QUOTA_EXHAUSTED_SECONDS:
+                hours = error.retry_after / 3600
+                self._exhausted = LLMError(
+                    f"{self._model} quota exhausted (resets in ~{hours:.1f} h); "
+                    f"try another model with --model"
+                )
+                raise self._exhausted from exc
+            raise error from exc
 
         parsed = response.parsed
         if not isinstance(parsed, schema):

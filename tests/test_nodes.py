@@ -501,3 +501,16 @@ def test_backoff_doubles_per_attempt(monkeypatch):
     nodes._generate_with_retry(llm, "p", TaskAnalysis, attempts=3)
 
     assert slept == [nodes.BACKOFF_SECONDS, nodes.BACKOFF_SECONDS * 2]
+
+
+def test_an_exhausted_daily_quota_is_not_slept_out(monkeypatch):
+    """A 'retry in 8 hours' must fail the call now, not stall the run."""
+    slept: list[float] = []
+    monkeypatch.setattr(nodes.time, "sleep", slept.append)
+
+    llm = FakeLLM(LLMError("quota", retry_after=30583.0), make_analysis())
+    update = nodes.analyze_tasks(AgentState(raw_tasks=[make_task()]), llm_client=llm)
+
+    assert slept == []
+    assert len(llm.calls) == 1
+    assert update["analyses"][0].needs_review

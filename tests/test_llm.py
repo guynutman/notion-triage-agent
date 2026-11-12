@@ -56,3 +56,30 @@ def test_retry_delay_is_read_from_the_error():
 
 def test_llm_error_carries_no_delay_by_default():
     assert LLMError("boom").retry_after is None
+
+
+def test_gemini_client_stops_calling_once_the_quota_is_exhausted():
+    from pydantic import BaseModel
+
+    from notion_triage_agent.llm import GeminiClient
+
+    class Out(BaseModel):
+        x: int
+
+    class QuotaModels:
+        calls = 0
+
+        def generate_content(self, **_kwargs):
+            QuotaModels.calls += 1
+            raise RuntimeError("429 quota ... 'retryDelay': '30583s' ...")
+
+    client = GeminiClient("key", requests_per_minute=0)
+    client._client = type("C", (), {"models": QuotaModels()})()
+
+    for _ in range(3):
+        try:
+            client.generate("p", Out)
+        except LLMError as exc:
+            assert "quota exhausted" in str(exc)
+
+    assert QuotaModels.calls == 1

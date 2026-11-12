@@ -30,6 +30,9 @@ from notion_triage_agent.models import (
 
 DEFAULT_WORKERS = 4
 BACKOFF_SECONDS = 2.0
+# A server asking for a longer wait than this is reporting an exhausted daily
+# quota, not a per-minute blip; sleeping it out would stall the run for hours.
+MAX_RETRY_WAIT_SECONDS = 90.0
 # One try plus one retry. A second retry rarely rescues a generation the
 # model has already botched twice, and on the free tier it burns quota.
 RETRY_ATTEMPTS = 2
@@ -293,6 +296,8 @@ def _generate_with_retry(
     Retrying *immediately* is not: a quota error re-fires into the same closed
     window. So we wait for exactly as long as the server asked when it told
     us (`retry_after`), and fall back to exponential backoff when it did not.
+    A requested wait above MAX_RETRY_WAIT_SECONDS means the quota is gone for
+    the day, so we give up at once rather than sleep for hours.
     """
     last_error: LLMError | None = None
     for attempt in range(attempts):
@@ -303,6 +308,8 @@ def _generate_with_retry(
             if attempt == attempts - 1:
                 break
             delay = getattr(exc, "retry_after", None)
+            if delay is not None and delay > MAX_RETRY_WAIT_SECONDS:
+                break
             time.sleep(delay if delay is not None else BACKOFF_SECONDS * 2**attempt)
     raise last_error
 
