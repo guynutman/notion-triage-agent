@@ -153,7 +153,11 @@ def format_results(state: AgentState, capacity_minutes: int | None = None) -> st
     titles = {task.id: task.title for task in state.raw_tasks}
     order = state.recommendation.ranked_tasks if state.recommendation else list(by_id)
 
-    lines = [f"\n📋 Triage Results — {len(state.analyses)} tasks analyzed\n"]
+    review = sum(analysis.needs_review for analysis in state.analyses)
+    header = f"\n📋 Triage Results — {len(state.analyses) - review} tasks analyzed"
+    if review:
+        header += f", {review} need manual review"
+    lines = [header + "\n"]
     for position, task_id in enumerate(order, start=1):
         analysis = by_id.get(task_id)
         if analysis is None:
@@ -165,9 +169,8 @@ def format_results(state: AgentState, capacity_minutes: int | None = None) -> st
         lines.append(f"   {state.recommendation.reasoning}")
         total = state.recommendation.estimated_total_minutes
         if total:
-            lines.append(
-                f"   Total estimated: ~{total} min of work across {len(state.analyses)} tasks"
-            )
+            analyzed = len(state.analyses) - review
+            lines.append(f"   Total estimated: ~{total} min of work across {analyzed} tasks")
 
     if state.plan:
         lines += _format_plan(state.plan, titles, capacity_minutes)
@@ -215,6 +218,13 @@ def _format_plan(plan, titles: dict, capacity_minutes: int | None) -> list[str]:
 
 def _format_task(position: int, analysis: TaskAnalysis, title: str) -> list[str]:
     """Render one ranked task as a block of lines."""
+    if analysis.needs_review:
+        return [
+            f"{position:2}. ⚠️  [NEEDS REVIEW] {title}",
+            "    Automatic analysis failed; triage this one by hand.",
+            f"    Reason: {analysis.error}",
+            "",
+        ]
     priority = analysis.priority.value
     icon = PRIORITY_ICONS.get(priority, "•")
     classification = analysis.classification

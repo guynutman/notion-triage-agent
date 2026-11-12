@@ -14,6 +14,7 @@ from notion_triage_agent import nodes
 from notion_triage_agent.models import (
     ActionItem,
     AgentState,
+    AnalysisStatus,
     Classification,
     DayPlan,
     LLMError,
@@ -147,7 +148,16 @@ def test_analyze_tasks_retries_before_giving_up():
     assert update["errors"] == []
 
 
-def test_one_failing_task_does_not_abort_the_batch():
+def test_invalid_generation_is_retried_exactly_once():
+    state = AgentState(raw_tasks=[make_task()])
+    llm = FakeLLM(LLMError("did not match TaskAnalysis"), LLMError("again"), make_analysis())
+
+    nodes.analyze_tasks(state, llm_client=llm, max_workers=1)
+
+    assert len(llm.calls) == 2
+
+
+def test_one_failing_task_degrades_to_a_fallback_without_aborting_the_batch():
     state = AgentState(raw_tasks=[make_task("t1"), make_task("t2", "Other")])
     # t1 fails both attempts; t2 succeeds.
     llm = FakeLLM(*[LLMError("boom")] * nodes.RETRY_ATTEMPTS, make_analysis("t2"))
@@ -155,9 +165,25 @@ def test_one_failing_task_does_not_abort_the_batch():
     # max_workers=1 keeps the queue-based fake deterministic.
     update = nodes.analyze_tasks(state, llm_client=llm, max_workers=1)
 
-    assert [a.task_id for a in update["analyses"]] == ["t2"]
+    first, second = update["analyses"]
+    assert (first.task_id, first.status) == ("t1", AnalysisStatus.NEEDS_REVIEW)
+    assert first.classification.confidence == 0.0
+    assert "boom" in first.error
+    assert (second.task_id, second.status) == ("t2", AnalysisStatus.ANALYZED)
     assert len(update["errors"]) == 1
     assert "Fix auth" in update["errors"][0]
+
+
+def test_model_cannot_claim_a_status():
+    """status is pipeline-owned: hidden from the schema and reset on success."""
+    schema = TaskAnalysis.model_json_schema()
+    assert "status" not in schema["properties"]
+    assert "error" not in schema["properties"]
+
+    claimed = make_analysis()
+    claimed.status = AnalysisStatus.NEEDS_REVIEW
+    update = nodes.analyze_tasks(AgentState(raw_tasks=[make_task()]), llm_client=FakeLLM(claimed))
+    assert update["analyses"][0].status == AnalysisStatus.ANALYZED
 
 
 def test_prompt_marks_absent_fields_explicitly():
@@ -191,6 +217,26 @@ def test_recommend_drops_hallucinated_ids_and_restores_dropped_ones():
 
     # t2 keeps the model's ordering, t1 is appended, the invented id is gone.
     assert update["recommendation"].ranked_tasks == ["t2", "t1"]
+
+
+def test_recommend_ranks_fallback_tasks_but_labels_them():
+    state = AgentState(
+        raw_tasks=[make_task("t1"), make_task("t2", "Broken")],
+        analyses=[make_analysis("t1"), TaskAnalysis.fallback("t2", "boom")],
+    )
+    llm = FakeLLM(Recommendation(ranked_tasks=["t1"], reasoning="r"))
+
+    update = nodes.recommend(state, llm_client=llm)
+
+    assert "NOT ANALYZED" in llm.calls[0]
+    assert update["recommendation"].ranked_tasks == ["t1", "t2"]
+
+
+def test_recommend_skips_the_model_when_every_task_fell_back():
+    llm = FakeLLM()
+    state = AgentState(raw_tasks=[make_task()], analyses=[TaskAnalysis.fallback("t1", "x")])
+    assert nodes.recommend(state, llm_client=llm) == {"recommendation": None}
+    assert llm.calls == []
 
 
 def test_recommend_records_the_error_when_the_model_fails():
@@ -249,6 +295,18 @@ def test_write_back_records_per_page_failures():
 
     assert len(update["errors"]) == 1
     assert "404" in update["errors"][0]
+
+
+def test_write_back_never_writes_a_fallback_placeholder():
+    notion = FakeNotion()
+    state = AgentState(
+        raw_tasks=[make_task("t1"), make_task("t2")],
+        analyses=[make_analysis("t1"), TaskAnalysis.fallback("t2", "boom")],
+    )
+
+    nodes.write_back(state, notion_client=notion)
+
+    assert [task_id for task_id, _ in notion.updates] == ["t1"]
 
 
 def test_write_back_does_nothing_without_analyses():
@@ -414,7 +472,17 @@ def test_retry_backs_off_exponentially_without_a_server_hint(monkeypatch):
     slept: list[float] = []
     monkeypatch.setattr(nodes.time, "sleep", slept.append)
 
-    llm = FakeLLM(LLMError("boom"), LLMError("boom"), make_analysis())
+    llm = FakeLLM(LLMError("boom"), make_analysis())
     nodes.analyze_tasks(AgentState(raw_tasks=[make_task()]), llm_client=llm, max_workers=1)
+
+    assert slept == [nodes.BACKOFF_SECONDS]
+
+
+def test_backoff_doubles_per_attempt(monkeypatch):
+    slept: list[float] = []
+    monkeypatch.setattr(nodes.time, "sleep", slept.append)
+
+    llm = FakeLLM(LLMError("a"), LLMError("b"), make_analysis())
+    nodes._generate_with_retry(llm, "p", TaskAnalysis, attempts=3)
 
     assert slept == [nodes.BACKOFF_SECONDS, nodes.BACKOFF_SECONDS * 2]

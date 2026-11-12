@@ -20,6 +20,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Protocol, TypeVar
 
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 
 class TaskCategory(StrEnum):
@@ -37,6 +38,13 @@ class PriorityLevel(StrEnum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
+
+class AnalysisStatus(StrEnum):
+    """Whether a TaskAnalysis came from the model or from the fallback path."""
+
+    ANALYZED = "analyzed"
+    NEEDS_REVIEW = "needs_review"
 
 
 class NotionTask(BaseModel):
@@ -107,6 +115,37 @@ class TaskAnalysis(BaseModel):
         description="One sentence justifying the priority, "
         "referencing urgency, blockers, or due dates."
     )
+    # Set by the pipeline, never by the model: SkipJsonSchema keeps these out
+    # of the schema the model is shown, so it cannot claim a status.
+    status: SkipJsonSchema[AnalysisStatus] = AnalysisStatus.ANALYZED
+    error: SkipJsonSchema[str | None] = None
+
+    @property
+    def needs_review(self) -> bool:
+        return self.status is AnalysisStatus.NEEDS_REVIEW
+
+    @classmethod
+    def fallback(cls, task_id: str, error: str) -> "TaskAnalysis":
+        """A placeholder for a task the model could not analyze.
+
+        Keeps the task in the ranking and the report, flagged for manual
+        review, instead of silently dropping it. Priority is the neutral
+        'medium' and confidence is 0.0, so nothing downstream mistakes it
+        for a real judgement.
+        """
+        return cls(
+            task_id=task_id,
+            classification=Classification(
+                category=TaskCategory.TASK,
+                confidence=0.0,
+                reasoning="Not analyzed: the model failed to produce a valid result.",
+            ),
+            action_items=[],
+            priority=PriorityLevel.MEDIUM,
+            priority_reasoning="Automatic analysis failed; review this task manually.",
+            status=AnalysisStatus.NEEDS_REVIEW,
+            error=error,
+        )
 
 
 class Recommendation(BaseModel):

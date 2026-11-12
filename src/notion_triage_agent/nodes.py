@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from notion_triage_agent.models import (
     AgentState,
+    AnalysisStatus,
     LLMClient,
     LLMError,
     NotionAPIError,
@@ -28,7 +29,9 @@ from notion_triage_agent.models import (
 
 DEFAULT_WORKERS = 4
 BACKOFF_SECONDS = 2.0
-RETRY_ATTEMPTS = 3
+# One try plus one retry. A second retry rarely rescues a generation the
+# model has already botched twice, and on the free tier it burns quota.
+RETRY_ATTEMPTS = 2
 DEFAULT_CAPACITY_MINUTES = 180
 WEEKDAYS = [
     "Monday",
@@ -107,8 +110,10 @@ def analyze_tasks(
 ) -> dict:
     """Node 2: analyze every fetched task, one LLM call each.
 
-    One task failing does not abort the batch -- its error is recorded and
-    the remaining tasks are still analyzed.
+    One task failing does not abort the batch. A task whose generation fails
+    validation (or whose call errors) is retried once; if it fails again it
+    degrades to TaskAnalysis.fallback -- still ranked and reported, flagged
+    for manual review -- and the error is recorded.
 
     Tasks are independent, so the calls run on a thread pool: the work is
     network-bound, so threads are enough and asyncio is not needed. Results
@@ -128,6 +133,7 @@ def analyze_tasks(
             try:
                 analyses.append(future.result())
             except LLMError as exc:
+                analyses.append(TaskAnalysis.fallback(task.id, str(exc)))
                 errors.append(f"analyze_tasks[{task.title}]: {exc}")
 
     return {"analyses": analyses, "errors": errors}
@@ -144,17 +150,20 @@ def _analyze_one(llm_client: LLMClient, task: NotionTask) -> TaskAnalysis:
     analysis = _generate_with_retry(llm_client, prompt, TaskAnalysis)
     # The model is told to echo the task id, but is not trusted to.
     analysis.task_id = task.id
+    analysis.status = AnalysisStatus.ANALYZED
+    analysis.error = None
     return analysis
 
 
 def recommend(state: AgentState, *, llm_client: LLMClient) -> dict:
     """Node 3: rank the analyzed tasks into a recommendation.
 
-    Returns {"recommendation": None} when there is nothing to rank.
+    Returns {"recommendation": None} when there is nothing to rank, or when
+    every task fell back (there is no real analysis to rank on).
     Hallucinated task IDs are dropped, and any analyzed task the model
     omitted is appended, so ranked_tasks always matches the real analyses.
     """
-    if not state.analyses:
+    if not any(not analysis.needs_review for analysis in state.analyses):
         return {"recommendation": None}
 
     prompt = RECOMMEND_PROMPT.format(
@@ -183,7 +192,7 @@ def write_back(state: AgentState, *, notion_client: TaskSource) -> dict:
 
     One failed page does not stop the rest; every failure is recorded.
     """
-    if not state.analyses:
+    if not any(not analysis.needs_review for analysis in state.analyses):
         return {}
 
     errors: list[str] = []
@@ -193,6 +202,10 @@ def write_back(state: AgentState, *, notion_client: TaskSource) -> dict:
         return {"errors": [f"write_back: could not prepare properties: {exc}"]}
 
     for analysis in state.analyses:
+        if analysis.needs_review:
+            # A fallback's priority is a placeholder; writing it would put a
+            # judgement nobody made into the user's database.
+            continue
         try:
             notion_client.update_task_properties(
                 analysis.task_id,
@@ -282,9 +295,15 @@ def _generate_with_retry(
 def _summarize(analysis: TaskAnalysis, raw_tasks: list[NotionTask]) -> str:
     """One line per task for the recommendation prompt."""
     titles = {task.id: task.title for task in raw_tasks}
+    title = titles.get(analysis.task_id, "(unknown)")
+    if analysis.needs_review:
+        return (
+            f"- id={analysis.task_id} | {title} | NOT ANALYZED (automatic analysis "
+            f"failed; needs manual review, effort unknown)"
+        )
     minutes = sum(item.estimated_minutes or 0 for item in analysis.action_items)
     return (
-        f"- id={analysis.task_id} | {titles.get(analysis.task_id, '(unknown)')} "
+        f"- id={analysis.task_id} | {title} "
         f"| priority={analysis.priority.value} "
         f"| category={analysis.classification.category.value} "
         f"| {len(analysis.action_items)} actions (~{minutes} min)"

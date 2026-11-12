@@ -148,7 +148,7 @@ uv run notion-triage-agent --plan 5 --capacity 120  # 5 days, 2 focused hours ea
 Gemini's free tier is tight — 5 requests/minute and as few as 20 requests/day per
 model — and this pipeline makes one call per task plus one or two more. So calls are
 spaced by a shared rate limiter across all worker threads, and a failed call is
-retried with the delay the server itself asked for rather than immediately, since an
+retried once with the delay the server itself asked for rather than immediately, since an
 instant retry just re-enters the same closed quota window.
 
 If a run dies on `RESOURCE_EXHAUSTED`, either switch models (`--model
@@ -232,10 +232,13 @@ report is identical no matter which response arrives first.
 
 ### Failure behaviour
 
-Errors accumulate in state instead of aborting the run. A failed model call is
-retried up to three times with backoff; if it still fails, that task is skipped, the
-error is recorded, and the remaining tasks are still analyzed. A partially failed run
-prints its results with the failures listed underneath.
+Errors accumulate in state instead of aborting the run. A failed or invalid
+generation is retried once, waiting as long as the server asks (or with backoff when
+it doesn't). If the retry also fails, that task degrades to a fallback status
+(`needs_review`): it stays in the ranking and the report, flagged for manual triage,
+the error is recorded, and the remaining tasks are still analyzed. Fallbacks are never
+written back to Notion — their priority is a placeholder, not a judgement. The
+`status` field is hidden from the model's schema, so the model cannot set it.
 
 This relies on a LangGraph detail: node updates *replace* a state field by default,
 so `errors` is declared as `Annotated[list[str], operator.add]` to make updates
@@ -254,7 +257,7 @@ uv run ruff check .
 | `test_notion_client.py` | Property parsing against a saved API response fixture, query filters |
 | `test_llm.py`           | Rate limiter spacing and thread sharing, error summarizing          |
 | `test_architecture.py`  | Module layering: peers import only the shared core                  |
-| `test_nodes.py`         | Retry, per-task failure isolation, ID reconciliation, prompt inputs, parallel ordering, write-back, planning |
+| `test_nodes.py`         | Single retry, fallback status, per-task failure isolation, ID reconciliation, prompt inputs, parallel ordering, write-back, planning |
 | `test_graph.py`         | The compiled pipeline end to end with fakes, conditional routing, run options |
 | `test_cli.py`           | Argument parsing, config validation, report formatting             |
 

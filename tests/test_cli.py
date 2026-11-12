@@ -12,7 +12,7 @@ from notion_triage_agent.cli import (
     parse_args,
     upcoming_days,
 )
-from notion_triage_agent.models import AgentState, Recommendation
+from notion_triage_agent.models import AgentState, Recommendation, TaskAnalysis
 from tests.test_nodes import (
     _plan,
     _plan_with_minutes,
@@ -92,6 +92,19 @@ def test_errors_surface_in_the_report():
 
     assert "1 error(s)" in report
     assert "quota exceeded" in report
+
+
+def test_fallback_tasks_are_flagged_for_review():
+    state = AgentState(
+        raw_tasks=[make_task("t1"), make_task("t2", "Broken one")],
+        analyses=[make_analysis("t1"), TaskAnalysis.fallback("t2", "invalid output")],
+    )
+
+    report = format_results(state)
+
+    assert "1 tasks analyzed, 1 need manual review" in report
+    assert "[NEEDS REVIEW] Broken one" in report
+    assert "Reason: invalid output" in report
 
 
 # --- argument parsing ----------------------------------------------------
