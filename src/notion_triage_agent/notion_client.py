@@ -76,7 +76,7 @@ class NotionClient:
             if limit is not None:
                 body["page_size"] = min(PAGE_SIZE, limit - len(tasks))
 
-            response = httpx.post(url, headers=self._headers, json=body)
+            response = self._request("POST", url, json=body)
             data = self._json_or_raise(response)
 
             tasks.extend(self._parse_page(page) for page in data["results"])
@@ -119,10 +119,8 @@ class NotionClient:
         Used later to write category/priority back to Notion.
         Raises NotionAPIError on failure.
         """
-        response = httpx.patch(
-            f"{NOTION_API_BASE}/pages/{task_id}",
-            headers=self._headers,
-            json={"properties": properties},
+        response = self._request(
+            "PATCH", f"{NOTION_API_BASE}/pages/{task_id}", json={"properties": properties}
         )
         self._json_or_raise(response)
 
@@ -135,22 +133,31 @@ class NotionClient:
 
         Raises NotionAPIError on failure.
         """
-        response = httpx.get(
-            f"{NOTION_API_BASE}/databases/{self._database_id}", headers=self._headers
-        )
+        response = self._request("GET", f"{NOTION_API_BASE}/databases/{self._database_id}")
         existing = self._json_or_raise(response).get("properties", {})
 
         missing = [name for name in names if name not in existing]
         if not missing:
             return []
 
-        response = httpx.patch(
+        response = self._request(
+            "PATCH",
             f"{NOTION_API_BASE}/databases/{self._database_id}",
-            headers=self._headers,
             json={"properties": {name: {"select": {}} for name in missing}},
         )
         self._json_or_raise(response)
         return missing
+
+    def _request(self, method: str, url: str, json: dict | None = None) -> httpx.Response:
+        """Send one request, turning transport failures into NotionAPIError.
+
+        A dropped connection or timeout should degrade like any other API
+        failure (recorded, pipeline finishes), not crash the run.
+        """
+        try:
+            return httpx.request(method, url, headers=self._headers, json=json, timeout=30.0)
+        except httpx.HTTPError as exc:
+            raise NotionAPIError(f"could not reach Notion: {exc}") from exc
 
     @staticmethod
     def _json_or_raise(response: httpx.Response) -> dict:

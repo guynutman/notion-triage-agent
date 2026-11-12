@@ -9,6 +9,7 @@ import pytest
 from notion_triage_agent.cli import (
     format_results,
     load_config,
+    normalize_database_id,
     parse_args,
     upcoming_days,
 )
@@ -45,6 +46,38 @@ def test_load_config_returns_the_values(monkeypatch):
         "NOTION_DATABASE_ID": "db",
         "GEMINI_API_KEY": "key",
     }
+
+
+def test_load_config_rejects_readme_placeholders(monkeypatch):
+    monkeypatch.setattr("notion_triage_agent.cli.load_dotenv", lambda: None)
+    monkeypatch.setenv("NOTION_TOKEN", "ntn_…")
+    monkeypatch.setenv("NOTION_DATABASE_ID", "db")
+    monkeypatch.setenv("GEMINI_API_KEY", "…")
+
+    with pytest.raises(RuntimeError, match="NOTION_TOKEN, GEMINI_API_KEY still contain"):
+        load_config()
+
+
+def test_load_config_strips_quotes_and_whitespace(monkeypatch):
+    monkeypatch.setattr("notion_triage_agent.cli.load_dotenv", lambda: None)
+    monkeypatch.setenv("NOTION_TOKEN", ' "ntn_x" ')
+    monkeypatch.setenv("NOTION_DATABASE_ID", "db")
+    monkeypatch.setenv("GEMINI_API_KEY", "key\n")
+
+    config = load_config()
+    assert (config["NOTION_TOKEN"], config["GEMINI_API_KEY"]) == ("ntn_x", "key")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "1a2b3c4d5e6f7890abcdef1234567890",
+        "1a2b3c4d-5e6f-7890-abcd-ef1234567890",
+        "https://www.notion.so/me/Task-Inbox-1a2b3c4d5e6f7890abcdef1234567890?v=ffffffffffffffffffffffffffffffff",
+    ],
+)
+def test_database_id_is_extracted_from_any_common_form(raw):
+    assert normalize_database_id(raw) == "1a2b3c4d5e6f7890abcdef1234567890"
 
 
 def test_empty_state_reports_nothing_to_do():

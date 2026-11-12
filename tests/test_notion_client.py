@@ -102,3 +102,19 @@ def test_an_explicit_status_wins_over_the_done_exclusion():
 
 def test_no_filter_when_nothing_is_excluded():
     assert NotionClient._build_filter(None, exclude_done=False) is None
+
+
+def test_transport_failures_become_api_errors(monkeypatch):
+    """A dropped connection must degrade like a 500, not crash the run."""
+    import httpx
+    import pytest
+
+    from notion_triage_agent.notion_client import NotionAPIError, NotionClient
+
+    def refuse(*_args, **_kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "request", refuse)
+
+    with pytest.raises(NotionAPIError, match="could not reach Notion"):
+        NotionClient("ntn_x", "db").fetch_tasks()

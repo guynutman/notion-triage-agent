@@ -6,6 +6,7 @@ a __main__ block. Builds the dependencies, runs the graph, formats output.
 
 import argparse
 import os
+import re
 import sys
 from datetime import date
 
@@ -130,14 +131,35 @@ def load_config() -> dict:
     them in one pass instead of one per run.
     """
     load_dotenv()
-    config = {name: os.environ.get(name) for name in REQUIRED_VARS}
+    config = {name: (os.environ.get(name) or "").strip().strip("\"'") for name in REQUIRED_VARS}
     missing = [name for name, value in config.items() if not value]
     if missing:
         raise RuntimeError(
             f"Missing environment variable(s): {', '.join(missing)}. "
             f"Add them to .env in the project root."
         )
+    # A value copied from the README still holds its "…" placeholder, which
+    # otherwise surfaces as an unreadable header-encoding traceback.
+    placeholders = [name for name, value in config.items() if not value.isascii()]
+    if placeholders:
+        raise RuntimeError(
+            f"{', '.join(placeholders)} still contain placeholder text (non-ASCII "
+            f"characters such as '…'). Replace them with the real values."
+        )
+    config["NOTION_DATABASE_ID"] = normalize_database_id(config["NOTION_DATABASE_ID"])
     return config
+
+
+def normalize_database_id(value: str) -> str:
+    """Accept a bare ID, a dashed UUID, or the database's full URL.
+
+    Copying the whole URL is the natural thing to do; pulling the 32 hex
+    characters out here saves a confusing 400 from Notion. Anything without
+    a recognisable ID is passed through for Notion to judge.
+    """
+    path = value.split("?")[0].replace("-", "")
+    match = re.search(r"[0-9a-fA-F]{32}(?![0-9a-fA-F])", path)
+    return match.group(0).lower() if match else value
 
 
 def format_results(state: AgentState, capacity_minutes: int | None = None) -> str:
