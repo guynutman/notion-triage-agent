@@ -55,11 +55,12 @@ class RateLimiter:
         if not self._interval:
             return
         with self._lock:
-            now = time.monotonic()
-            wait = max(0.0, self._next_slot - now)
-            self._next_slot = max(now, self._next_slot) + self._interval
-        if wait:
-            time.sleep(wait)
+            slot = max(time.monotonic(), self._next_slot)
+            self._next_slot = slot + self._interval
+        # Loop rather than sleep once: on Windows time.sleep can return a few
+        # milliseconds early, which would let calls bunch up past the limit.
+        while (remaining := slot - time.monotonic()) > 0:
+            time.sleep(remaining)
 
 
 class LLMClient(Protocol):
