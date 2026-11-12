@@ -171,7 +171,9 @@ class PlannedTask(BaseModel):
 
     task_id: str = Field(description="Task ID from the supplied list, copied verbatim.")
     action_summary: str = Field(
-        description="What to actually do in this sitting, in one short imperative line."
+        description="What to actually do in this sitting, in one short imperative line. "
+        "Name the specific step for this day (e.g. 'Draft sections 1-2'), "
+        "not the task title -- the title is already shown next to it."
     )
     estimated_minutes: int | None = Field(
         default=None,
