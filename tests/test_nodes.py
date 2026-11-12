@@ -11,12 +11,13 @@ import time
 import pytest
 
 from notion_triage_agent import nodes
-from notion_triage_agent.llm import LLMError
 from notion_triage_agent.models import (
     ActionItem,
     AgentState,
     Classification,
     DayPlan,
+    LLMError,
+    NotionAPIError,
     NotionTask,
     PlannedTask,
     PriorityLevel,
@@ -25,7 +26,6 @@ from notion_triage_agent.models import (
     TaskCategory,
     WeeklyPlan,
 )
-from notion_triage_agent.notion_client import NotionAPIError
 
 
 def make_task(task_id: str = "t1", title: str = "Fix auth") -> NotionTask:

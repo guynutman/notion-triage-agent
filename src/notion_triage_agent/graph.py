@@ -9,13 +9,11 @@ from functools import partial
 from langgraph.graph import END, START, StateGraph
 
 from notion_triage_agent import nodes
-from notion_triage_agent.llm import LLMClient
-from notion_triage_agent.models import AgentState
-from notion_triage_agent.notion_client import NotionClient
+from notion_triage_agent.models import AgentState, LLMClient, TaskSource
 
 
 def build_graph(
-    notion_client: NotionClient,
+    notion_client: TaskSource,
     llm_client: LLMClient,
     *,
     filter_status: str | None = None,

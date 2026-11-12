@@ -1,17 +1,21 @@
 """LLM client wrapper.
 
 The only file that knows which model vendor we use. Nodes depend on the
-LLMClient protocol below, not on any SDK -- swapping providers means adding
-a class here and changing one line in cli.py.
+LLMClient protocol in models.py, not on this file or any SDK -- swapping
+providers means adding a class here and changing one line in cli.py.
 """
 
 import re
 import threading
 import time
-from typing import Protocol, TypeVar
+from typing import TypeVar
 
 from google import genai
 from pydantic import BaseModel
+
+from notion_triage_agent.models import LLMClient, LLMError
+
+__all__ = ["DEFAULT_MODEL", "GeminiClient", "LLMClient", "LLMError", "RateLimiter"]
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -22,19 +26,6 @@ DEFAULT_MODEL = "gemini-3.6-flash"
 DEFAULT_REQUESTS_PER_MINUTE = 5
 
 _RETRY_DELAY = re.compile(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'")
-
-
-class LLMError(Exception):
-    """Raised when the model call fails or returns unusable output.
-
-    `retry_after` carries the server's requested wait in seconds when it sent
-    one, so the caller can back off for exactly as long as it was told to
-    rather than guessing.
-    """
-
-    def __init__(self, message: str, retry_after: float | None = None):
-        super().__init__(message)
-        self.retry_after = retry_after
 
 
 class RateLimiter:
@@ -63,16 +54,8 @@ class RateLimiter:
             time.sleep(remaining)
 
 
-class LLMClient(Protocol):
-    """What the nodes need from a language model. Nothing else."""
-
-    def generate(self, prompt: str, schema: type[T]) -> T:
-        """Return an instance of `schema` produced from `prompt`."""
-        ...
-
-
 class GeminiClient:
-    """LLMClient backed by the Google Gemini API."""
+    """LLMClient (see models.py) backed by the Google Gemini API."""
 
     def __init__(
         self,

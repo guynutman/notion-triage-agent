@@ -6,20 +6,25 @@ fields it changed; LangGraph merges that into the state.
 Dependencies (notion_client, llm_client) arrive as keyword arguments so the
 nodes can be tested with fakes. graph.py binds the real ones with
 functools.partial.
+
+This module imports only from models.py: it sees the TaskSource and
+LLMClient protocols, never the Notion or Gemini adapters behind them.
 """
 
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from notion_triage_agent.llm import LLMClient, LLMError
 from notion_triage_agent.models import (
     AgentState,
+    LLMClient,
+    LLMError,
+    NotionAPIError,
     NotionTask,
     Recommendation,
     TaskAnalysis,
+    TaskSource,
     WeeklyPlan,
 )
-from notion_triage_agent.notion_client import NotionAPIError, NotionClient
 
 DEFAULT_WORKERS = 4
 BACKOFF_SECONDS = 2.0
@@ -78,7 +83,7 @@ too large for a single sitting. Do not invent tasks or IDs."""
 def fetch_tasks(
     state: AgentState,
     *,
-    notion_client: NotionClient,
+    notion_client: TaskSource,
     filter_status: str | None = None,
     limit: int | None = None,
     exclude_done: bool = True,
@@ -170,7 +175,7 @@ def recommend(state: AgentState, *, llm_client: LLMClient) -> dict:
     return {"recommendation": recommendation}
 
 
-def write_back(state: AgentState, *, notion_client: NotionClient) -> dict:
+def write_back(state: AgentState, *, notion_client: TaskSource) -> dict:
     """Optional node 4: write each task's category and priority into Notion.
 
     The select columns are created if the database does not have them, so a

@@ -186,13 +186,15 @@ to update is reported without stopping the rest.
 
 ## Architecture
 
-Six modules, each with one job. Dependencies point inward — nothing imports sideways.
+Six modules, each with one job, around a shared-types core. Dependencies point
+inward — the three peer modules (`notion_client`, `llm`, `nodes`) import only
+`models.py`, never each other. `tests/test_architecture.py` enforces this.
 
 | Module             | Responsibility                                        | Knows about          |
 | ------------------ | ----------------------------------------------------- | -------------------- |
-| `models.py`        | Every data shape: API rows, LLM outputs, graph state   | nothing              |
+| `models.py`        | Every data shape, plus the `TaskSource`/`LLMClient` protocols and their errors | nothing |
 | `notion_client.py` | HTTP, pagination, Notion property parsing              | Notion API           |
-| `llm.py`           | The `LLMClient` protocol and its Gemini implementation | the model vendor     |
+| `llm.py`           | The Gemini implementation of `LLMClient`               | the model vendor     |
 | `nodes.py`         | The triage logic, one function per pipeline step       | neither of the above |
 | `graph.py`         | Wiring nodes into a `StateGraph`                       | LangGraph            |
 | `cli.py`           | Env vars, dependency construction, output formatting   | everything, thinly   |
@@ -212,8 +214,8 @@ LangGraph only ever passes state. The payoff is the test suite: every node, and 
 entire compiled graph, runs against fakes with no network and no API keys — which is
 also why CI needs no secrets.
 
-**The vendor SDK lives in one file.** `nodes.py` depends on a two-method `Protocol`,
-not on `google.genai`. Swapping providers means adding a class to `llm.py` and
+**The vendor SDK lives in one file.** `nodes.py` depends on the `LLMClient` and
+`TaskSource` protocols in `models.py`, not on `google.genai` or `httpx`. Swapping providers means adding a class to `llm.py` and
 changing one line in `cli.py`; no data structures and no logic change.
 
 **Model output is not trusted.** The model is asked to echo each task's ID, and the
@@ -251,6 +253,7 @@ uv run ruff check .
 | `test_models.py`        | Range and enum validation, nested parsing, empty-state construction |
 | `test_notion_client.py` | Property parsing against a saved API response fixture, query filters |
 | `test_llm.py`           | Rate limiter spacing and thread sharing, error summarizing          |
+| `test_architecture.py`  | Module layering: peers import only the shared core                  |
 | `test_nodes.py`         | Retry, per-task failure isolation, ID reconciliation, prompt inputs, parallel ordering, write-back, planning |
 | `test_graph.py`         | The compiled pipeline end to end with fakes, conditional routing, run options |
 | `test_cli.py`           | Argument parsing, config validation, report formatting             |

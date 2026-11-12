@@ -8,7 +8,9 @@ from datetime import datetime
 
 import httpx
 
-from notion_triage_agent.models import NotionTask
+from notion_triage_agent.models import NotionAPIError, NotionTask
+
+__all__ = ["NotionAPIError", "NotionClient"]
 
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
@@ -24,12 +26,11 @@ STATUS_PROPERTY = "Status"
 DONE_STATUS = "Done"
 
 
-class NotionAPIError(Exception):
-    """Raised when the Notion API returns a non-2xx response."""
-
-
 class NotionClient:
-    """Wrapper around the Notion API. Handles auth, pagination, property parsing."""
+    """TaskSource (see models.py) backed by the Notion API.
+
+    Handles auth, pagination, and property parsing.
+    """
 
     def __init__(self, token: str, database_id: str) -> None:
         """Store credentials and build auth headers. No network calls here."""

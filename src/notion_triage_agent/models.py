@@ -1,8 +1,13 @@
-"""Every data shape in the system.
+"""The shared-types core: every data shape and every boundary contract.
 
-Three families live here: what the Notion API gives us (NotionTask), what
-the model is asked to produce (Classification through WeeklyPlan), and what
-flows between pipeline steps (AgentState).
+Four families live here: what the Notion API gives us (NotionTask), what
+the model is asked to produce (Classification through WeeklyPlan), what
+flows between pipeline steps (AgentState), and the protocols and errors of
+the two outside services (TaskSource, LLMClient, NotionAPIError, LLMError).
+
+Every other module imports from here and from nowhere sideways: nodes.py
+never imports llm.py or notion_client.py, and those two never import each
+other. The adapters implement the protocols; the nodes consume them.
 
 Descriptions on the LLM-output models are emitted into the JSON schema the
 model receives, so they are prompt text, not documentation. No I/O, no
@@ -12,7 +17,7 @@ imports from other project modules.
 import operator
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -177,3 +182,52 @@ class AgentState(BaseModel):
     # operator.add is a LangGraph reducer: node updates are appended to this
     # list instead of replacing it, so errors from every node survive the run.
     errors: Annotated[list[str], operator.add] = Field(default_factory=list)
+
+
+# --- service boundaries ---------------------------------------------------
+
+T = TypeVar("T", bound=BaseModel)
+
+
+class LLMError(Exception):
+    """Raised when the model call fails or returns unusable output.
+
+    `retry_after` carries the server's requested wait in seconds when it sent
+    one, so the caller can back off for exactly as long as it was told to
+    rather than guessing.
+    """
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class NotionAPIError(Exception):
+    """Raised when the Notion API returns a non-2xx response."""
+
+
+class LLMClient(Protocol):
+    """What the nodes need from a language model. Nothing else."""
+
+    def generate(self, prompt: str, schema: type[T]) -> T:
+        """Return an instance of `schema` produced from `prompt`.
+
+        Raises LLMError on any failure, including output that does not
+        validate against `schema`.
+        """
+        ...
+
+
+class TaskSource(Protocol):
+    """What the nodes need from the task database. Nothing else."""
+
+    def fetch_tasks(
+        self,
+        filter_status: str | None = None,
+        limit: int | None = None,
+        exclude_done: bool = True,
+    ) -> list[NotionTask]: ...
+
+    def ensure_select_properties(self, names: list[str]) -> list[str]: ...
+
+    def update_task_properties(self, task_id: str, properties: dict) -> None: ...
